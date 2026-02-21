@@ -3,6 +3,7 @@ import os
 import re
 import tempfile
 import time
+from dataclasses import dataclass
 from pathlib import Path
 
 import keyboard
@@ -24,33 +25,72 @@ SAMPLE_RATE = 16000
 CHANNELS = 1
 BLOCK_SIZE = 1024
 
-SYSTEM_PROMPT = (
-    "Du ar en hjalpsam svensk assistent. "
-    "Svara pa svenska. Var tydlig och konkret. "
-    "Om fragan galler aktuell information, anvand webben nar det behovs. "
-    "Svara normalt kort (3-6 meningar) om inte anvandaren ber om ett langt svar."
-)
-
-EDGE_VOICE = os.getenv("EDGE_TTS_VOICE", "sv-SE-HeddaNeural")
-EDGE_FALLBACK_VOICES = [
-    EDGE_VOICE,
-    "sv-SE-SofieNeural",
-    "sv-SE-MattiasNeural",
-    "sv-SE-ErikNeural",
-]
 EDGE_RATE = os.getenv("EDGE_TTS_RATE", "+15%")
 EDGE_PITCH = os.getenv("EDGE_TTS_PITCH", "+0Hz")
 EDGE_RETRIES = 2
 
 
-def make_tts_engine() -> pyttsx3.Engine:
+@dataclass
+class VoiceProfile:
+    key: str
+    label: str
+    language: str
+    primary_edge_voice: str
+
+
+VOICE_PROFILES = [
+    VoiceProfile("1", "Svenska - Hedda (Edge)", "sv", "sv-SE-HeddaNeural"),
+    VoiceProfile("2", "Svenska - Sofie (Edge)", "sv", "sv-SE-SofieNeural"),
+    VoiceProfile("3", "English - Jenny (Edge)", "en", "en-US-JennyNeural"),
+]
+
+EDGE_FALLBACKS = {
+    "sv": ["sv-SE-HeddaNeural", "sv-SE-SofieNeural", "sv-SE-MattiasNeural", "sv-SE-ErikNeural"],
+    "en": ["en-US-JennyNeural", "en-US-AriaNeural", "en-US-GuyNeural"],
+}
+
+
+def select_profile() -> VoiceProfile:
+    print("\nValj rost + sprak:")
+    for profile in VOICE_PROFILES:
+        print(f"  {profile.key}. {profile.label}")
+
+    while True:
+        choice = input("Ditt val (1-3): ").strip()
+        for profile in VOICE_PROFILES:
+            if profile.key == choice:
+                return profile
+        print("Ogiltigt val. Skriv 1, 2 eller 3.")
+
+
+def system_prompt_for(language: str) -> str:
+    if language == "sv":
+        return (
+            "Du ar en hjalpsam svensk assistent. "
+            "Svara pa svenska. Var tydlig och konkret. "
+            "Om fragan galler aktuell information, anvand webben nar det behovs. "
+            "Svara normalt kort (3-6 meningar) om inte anvandaren ber om ett langt svar."
+        )
+
+    return (
+        "You are a helpful assistant. "
+        "Reply in English with clear, practical answers. "
+        "If the user asks for current information, use web search when needed. "
+        "Keep answers normally concise unless the user asks for depth."
+    )
+
+
+def make_tts_engine(language: str) -> pyttsx3.Engine:
     engine = pyttsx3.init()
     engine.setProperty("rate", 195)
 
     for voice in engine.getProperty("voices"):
         voice_id = (voice.id or "").lower()
         voice_name = (voice.name or "").lower()
-        if "sv" in voice_id or "svenska" in voice_name:
+        if language == "sv" and ("sv" in voice_id or "svenska" in voice_name):
+            engine.setProperty("voice", voice.id)
+            break
+        if language == "en" and ("en" in voice_id or "english" in voice_name):
             engine.setProperty("voice", voice.id)
             break
 
@@ -97,7 +137,7 @@ def _split_for_tts(text: str, max_chars: int = 260) -> list[str]:
         return []
 
     parts = re.split(r"(?<=[.!?])\s+", text)
-    chunks: list[str] = []
+    chunks = []
     current = ""
 
     for part in parts:
@@ -126,43 +166,53 @@ def _split_for_tts(text: str, max_chars: int = 260) -> list[str]:
     return chunks
 
 
-def speak(engine: pyttsx3.Engine, text: str) -> None:
-    if not text:
-        return
+def _edge_voice_order(profile: VoiceProfile) -> list[str]:
+    base = EDGE_FALLBACKS.get(profile.language, [])
+    return list(dict.fromkeys([profile.primary_edge_voice] + base))
 
+
+def _speak_with_edge(chunks: list[str], profile: VoiceProfile) -> bool:
+    if not EDGE_TTS_AVAILABLE:
+        return False
+
+    for voice in _edge_voice_order(profile):
+        voice_ok = True
+        for chunk in chunks:
+            chunk_ok = False
+            last_error = None
+            for _ in range(EDGE_RETRIES):
+                tmp = Path(tempfile.NamedTemporaryFile(delete=False, suffix=".mp3").name)
+                try:
+                    asyncio.run(_edge_save_audio(chunk, voice, str(tmp)))
+                    audio, samplerate = sf.read(str(tmp), dtype="float32")
+                    sd.play(audio, samplerate)
+                    sd.wait()
+                    chunk_ok = True
+                    break
+                except Exception as e:
+                    last_error = e
+                    time.sleep(0.15)
+                finally:
+                    tmp.unlink(missing_ok=True)
+            if not chunk_ok:
+                voice_ok = False
+                print(f"Edge TTS misslyckades med {voice}: {last_error}")
+                break
+        if voice_ok:
+            return True
+
+    return False
+
+
+def speak(engine: pyttsx3.Engine, text: str, profile: VoiceProfile) -> None:
     chunks = _split_for_tts(text)
     if not chunks:
         return
 
-    if EDGE_TTS_AVAILABLE:
-        unique_voices = list(dict.fromkeys(EDGE_FALLBACK_VOICES))
-        for voice in unique_voices:
-            voice_ok = True
-            for chunk in chunks:
-                chunk_ok = False
-                last_error: Exception | None = None
-                for _ in range(EDGE_RETRIES):
-                    tmp = Path(tempfile.NamedTemporaryFile(delete=False, suffix=".mp3").name)
-                    try:
-                        asyncio.run(_edge_save_audio(chunk, voice, str(tmp)))
-                        audio, samplerate = sf.read(str(tmp), dtype="float32")
-                        sd.play(audio, samplerate)
-                        sd.wait()
-                        chunk_ok = True
-                        break
-                    except Exception as e:
-                        last_error = e
-                        time.sleep(0.15)
-                    finally:
-                        tmp.unlink(missing_ok=True)
-                if not chunk_ok:
-                    voice_ok = False
-                    print(f"Edge TTS misslyckades med {voice}: {last_error}")
-                    break
-            if voice_ok:
-                return
-        print("Edge TTS misslyckades for alla roster. Faller tillbaka till lokal rost.")
+    if _speak_with_edge(chunks, profile):
+        return
 
+    print("TTS fallback till lokal rost.")
     try:
         for chunk in chunks:
             _speak_local(engine, chunk)
@@ -184,7 +234,7 @@ def record_while_enter_held() -> str | None:
     if not wait_for_enter_hold():
         return None
 
-    frames: list[np.ndarray] = []
+    frames = []
     print("Spelar in...")
 
     try:
@@ -214,28 +264,26 @@ def record_while_enter_held() -> str | None:
     return tmp.name
 
 
-def transcribe_audio(client: OpenAI, wav_path: str) -> str:
+def transcribe_audio(client: OpenAI, wav_path: str, language: str) -> str:
     with open(wav_path, "rb") as audio_file:
         resp = client.audio.transcriptions.create(
             model="whisper-1",
             file=audio_file,
-            language="sv",
+            language=language,
         )
     return (resp.text or "").strip()
 
 
-def ask_openai(client: OpenAI, user_text: str) -> str:
-    """
-    Forsok ChatGPT-likt svar med Responses API + web search.
-    Fallback till chat.completions om responses/tooling inte fungerar.
-    """
+def ask_openai(client: OpenAI, user_text: str, language: str) -> str:
+    system_prompt = system_prompt_for(language)
     tool_types = ["web_search", "web_search_preview"]
+
     for tool_type in tool_types:
         try:
             resp = client.responses.create(
                 model="gpt-4.1-mini",
                 input=[
-                    {"role": "system", "content": SYSTEM_PROMPT},
+                    {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_text},
                 ],
                 tools=[{"type": tool_type}],
@@ -250,7 +298,7 @@ def ask_openai(client: OpenAI, user_text: str) -> str:
         model="gpt-4o-mini",
         temperature=0.2,
         messages=[
-            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_text},
         ],
     )
@@ -263,15 +311,13 @@ def main() -> None:
     if not api_key:
         raise SystemExit("OPENAI_API_KEY saknas i .env")
 
+    profile = select_profile()
     client = OpenAI(api_key=api_key)
-    engine = make_tts_engine()
+    engine = make_tts_engine(profile.language)
 
-    print("Push-to-talk redo.")
+    print("\nPush-to-talk redo.")
     print("Kor terminalen som Administrator om ENTER-hold inte registreras.")
-    if EDGE_TTS_AVAILABLE:
-        print(f"Edge TTS aktivt. Primar rost: {EDGE_VOICE}")
-    else:
-        print("Edge TTS saknas. Kor lokal svensk rost i stallet.")
+    print(f"Vald profil: {profile.label}")
 
     while True:
         wav_path = record_while_enter_held()
@@ -282,19 +328,22 @@ def main() -> None:
             continue
 
         try:
-            user_text = transcribe_audio(client, wav_path)
+            user_text = transcribe_audio(client, wav_path, profile.language)
             if not user_text:
                 print("Horde inget.")
-                speak(engine, "Jag horde inget. Forsok igen.")
+                fallback = "Jag horde inget. Forsok igen." if profile.language == "sv" else "I did not hear anything. Please try again."
+                speak(engine, fallback, profile)
                 continue
 
             print(f"Du sa: {user_text}")
-            answer = ask_openai(client, user_text)
+            answer = ask_openai(client, user_text, profile.language)
             print(f"Assistent: {answer}")
-            speak(engine, answer or "Jag fick inget svar just nu.")
+            fallback = "Jag fick inget svar just nu." if profile.language == "sv" else "I could not get an answer right now."
+            speak(engine, answer or fallback, profile)
         except Exception as e:
             print(f"Fel: {e}")
-            speak(engine, "Nagot gick fel. Prova igen.")
+            fallback = "Nagot gick fel. Prova igen." if profile.language == "sv" else "Something went wrong. Please try again."
+            speak(engine, fallback, profile)
         finally:
             try:
                 Path(wav_path).unlink(missing_ok=True)
