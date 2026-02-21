@@ -1,4 +1,5 @@
 ﻿import asyncio
+import ipaddress
 import os
 import queue
 import re
@@ -22,6 +23,7 @@ from pynput import mouse as pynput_mouse
 from dotenv import load_dotenv, set_key
 from openai import OpenAI
 import urllib3
+from tkinter import simpledialog
 
 try:
     from edge_tts import Communicate
@@ -29,6 +31,13 @@ try:
 except Exception:
     Communicate = None
     EDGE_TTS_AVAILABLE = False
+
+try:
+    from miio import RoborockVacuum
+    ROBOROCK_AVAILABLE = True
+except Exception:
+    RoborockVacuum = None
+    ROBOROCK_AVAILABLE = False
 
 SAMPLE_RATE = 16000
 CHANNELS = 1
@@ -43,6 +52,7 @@ EDGE_FALLBACK_PROSODY = [
 ]
 SHORT_PAUSES = os.getenv("TTS_SHORT_PAUSES", "1").strip().lower() in {"1", "true", "yes", "on"}
 REDUCE_COMMA_PAUSES = os.getenv("TTS_REDUCE_COMMA_PAUSES", "1").strip().lower() in {"1", "true", "yes", "on"}
+TTS_ENABLED_DEFAULT = os.getenv("TTS_ENABLED", "1").strip().lower() in {"1", "true", "yes", "on"}
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 
@@ -157,6 +167,18 @@ def _normalize_text(text: str) -> str:
     return re.sub(r"\s+", " ", text).strip()
 
 
+def _valid_host(value: str) -> bool:
+    value = (value or "").strip()
+    if not value:
+        return False
+    try:
+        ipaddress.ip_address(value)
+        return True
+    except ValueError:
+        pass
+    return bool(re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9.-]{0,252}[A-Za-z0-9]", value))
+
+
 class VoiceAssistantGUI:
     def __init__(self, root: tk.Tk):
         self.root = root
@@ -165,7 +187,7 @@ class VoiceAssistantGUI:
         self.root.minsize(980, 680)
         self.root.configure(bg="#0b1120")
 
-        load_dotenv()
+        load_dotenv(override=True)
         self.env_path = Path(__file__).resolve().parent / ".env"
         api_key = os.getenv("OPENAI_API_KEY")
         if not api_key:
@@ -174,9 +196,16 @@ class VoiceAssistantGUI:
         self.client = OpenAI(api_key=api_key)
         self.current_profile = VOICE_PROFILES[0]
         self.tts_engine = self._make_local_tts_engine(self.current_profile.language)
+        self.tts_enabled = TTS_ENABLED_DEFAULT
         self.keybind = "enter"
         self.hue_bridge_ip = os.getenv("HUE_BRIDGE_IP", "").strip()
         self.hue_app_key = os.getenv("HUE_APP_KEY", "").strip()
+        self.vacuum_ip = os.getenv("VACUUM_IP", "").strip()
+        self.vacuum_token = os.getenv("VACUUM_TOKEN", "").strip()
+        self.ha_url = os.getenv("HA_URL", "").strip()
+        self.ha_token = os.getenv("HA_TOKEN", "").strip()
+        self.ha_vacuum_entity_id = os.getenv("HA_VACUUM_ENTITY_ID", "").strip()
+        self.vacuum = None
         self.input_devices = self._get_input_devices()
         self.input_device_index = self._pick_default_input_device()
         self.running = False
@@ -196,8 +225,12 @@ class VoiceAssistantGUI:
         if self.hue_bridge_ip and self.hue_app_key:
             self._log("system", f"Hue ansluten ({self.hue_bridge_ip}).")
         else:
-            self._log("system", "Hue inte ansluten. Klicka 'Koppla Hue' och tryck knappen pa hubben.")
+            self._log("system", "Hue inte ansluten ännu. Försöker ansluta automatiskt.")
+        if self.ha_url and self.ha_token and self.ha_vacuum_entity_id:
+            self._log("system", f"Home Assistant vacuum konfigurerad ({self.ha_vacuum_entity_id}).")
         self._log("system", "Redo. Tryck Start och hall vald push-to-talk-tangent.")
+        self._auto_connect_hue()
+        self._auto_connect_vacuum()
         self.root.after(80, self._drain_queues)
 
     def _setup_style(self) -> None:
@@ -262,6 +295,19 @@ class VoiceAssistantGUI:
         self.input_combo.grid(row=2, column=1, columnspan=4, sticky="ew", padx=(8, 0), pady=(10, 0))
         self.input_combo.bind("<<ComboboxSelected>>", self._on_input_changed)
 
+        ttk.Label(panel, text="Svarslage", style="Card.TLabel").grid(row=3, column=0, sticky="w", pady=(10, 0))
+        self.response_mode_var = tk.StringVar(value="Tal + text" if self.tts_enabled else "Endast text")
+        self.response_mode_combo = ttk.Combobox(
+            panel,
+            textvariable=self.response_mode_var,
+            values=["Tal + text", "Endast text"],
+            state="readonly",
+            width=20,
+            style="App.TCombobox",
+        )
+        self.response_mode_combo.grid(row=3, column=1, sticky="w", padx=(8, 0), pady=(10, 0))
+        self.response_mode_combo.bind("<<ComboboxSelected>>", self._on_response_mode_changed)
+
         panel.columnconfigure(1, weight=1)
 
         controls = ttk.Frame(shell, style="App.TFrame", padding=(0, 12, 0, 12))
@@ -270,8 +316,17 @@ class VoiceAssistantGUI:
         self.start_btn.pack(side=tk.LEFT)
         self.stop_btn = ttk.Button(controls, text="Stop", command=self.stop, state=tk.DISABLED, style="Danger.TButton")
         self.stop_btn.pack(side=tk.LEFT, padx=(10, 0))
-        ttk.Button(controls, text="Koppla Hue", command=self._connect_hue, style="App.TButton").pack(side=tk.LEFT, padx=(18, 0))
         ttk.Button(controls, text="Rensa text", command=self._clear_log, style="App.TButton").pack(side=tk.LEFT, padx=(10, 0))
+
+        text_bar = ttk.Frame(shell, style="CardAlt.TFrame", padding=(12, 10))
+        text_bar.pack(fill=tk.X, pady=(0, 12))
+        ttk.Label(text_bar, text="Skriv till assistenten:", style="Subtle.TLabel").pack(side=tk.LEFT)
+        self.text_input_var = tk.StringVar()
+        self.text_input_entry = ttk.Entry(text_bar, textvariable=self.text_input_var)
+        self.text_input_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(10, 10))
+        self.text_input_entry.bind("<Return>", self._send_text_query_event)
+        self.send_btn = ttk.Button(text_bar, text="Skicka", command=self._send_text_query, style="App.TButton")
+        self.send_btn.pack(side=tk.RIGHT)
 
         log_card = ttk.Frame(shell, style="Card.TFrame", padding=(0, 0, 0, 0))
         log_card.pack(fill=tk.BOTH, expand=True)
@@ -356,6 +411,14 @@ class VoiceAssistantGUI:
         set_key(str(self.env_path), key, value)
         os.environ[key] = value
 
+    def _on_response_mode_changed(self, _event=None) -> None:
+        mode = self.response_mode_var.get().strip()
+        enabled = mode == "Tal + text"
+        with self.lock:
+            self.tts_enabled = enabled
+        self._save_env("TTS_ENABLED", "1" if enabled else "0")
+        self._log("system", f"Svarslage satt till: {mode}")
+
     def _discover_hue_bridge_ip(self) -> str:
         resp = requests.get("https://discovery.meethue.com", timeout=8)
         resp.raise_for_status()
@@ -373,6 +436,49 @@ class VoiceAssistantGUI:
         if not resp.text:
             return {}
         return resp.json()
+
+    def _ha_is_configured(self) -> bool:
+        return bool(self.ha_url and self.ha_token and self.ha_vacuum_entity_id)
+
+    def _ha_mode_requested(self) -> bool:
+        return bool(self.ha_url or self.ha_token or self.ha_vacuum_entity_id)
+
+    def _ha_missing_fields(self) -> list[str]:
+        missing = []
+        if not self.ha_url:
+            missing.append("HA_URL")
+        if not self.ha_token:
+            missing.append("HA_TOKEN")
+        if not self.ha_vacuum_entity_id:
+            missing.append("HA_VACUUM_ENTITY_ID")
+        return missing
+
+    def _ha_request(self, method: str, path: str, payload=None):
+        if not self.ha_url or not self.ha_token:
+            raise RuntimeError("HA_URL/HA_TOKEN saknas.")
+        base_url = self.ha_url.rstrip("/")
+        headers = {"Authorization": f"Bearer {self.ha_token}", "Content-Type": "application/json"}
+        resp = requests.request(method, f"{base_url}{path}", json=payload, headers=headers, timeout=10)
+        if resp.status_code == 401:
+            raise RuntimeError("Home Assistant token ogiltig eller utgangen.")
+        resp.raise_for_status()
+        if not resp.text:
+            return {}
+        return resp.json()
+
+    def _ha_call_vacuum_service(self, service: str):
+        if not self.ha_vacuum_entity_id:
+            raise RuntimeError("HA_VACUUM_ENTITY_ID saknas.")
+        self._ha_request(
+            "POST",
+            f"/api/services/vacuum/{service}",
+            {"entity_id": self.ha_vacuum_entity_id},
+        )
+
+    def _ha_vacuum_state(self):
+        if not self.ha_vacuum_entity_id:
+            raise RuntimeError("HA_VACUUM_ENTITY_ID saknas.")
+        return self._ha_request("GET", f"/api/states/{self.ha_vacuum_entity_id}")
 
     def _connect_hue(self) -> None:
         def worker():
@@ -395,7 +501,7 @@ class VoiceAssistantGUI:
                 if "error" in first:
                     desc = first["error"].get("description", "okant fel")
                     if "link button not pressed" in desc.lower():
-                        raise RuntimeError("Tryck pa knappen pa Hue-hubben och klicka 'Koppla Hue' igen.")
+                        raise RuntimeError("Tryck pa knappen pa Hue-hubben och forsok igen.")
                     raise RuntimeError(f"Pairing misslyckades: {desc}")
                 username = first.get("success", {}).get("username")
                 if not username:
@@ -407,6 +513,166 @@ class VoiceAssistantGUI:
                 self._log("system", f"Hue-fel: {e}")
 
         threading.Thread(target=worker, daemon=True).start()
+
+    def _auto_connect_hue(self) -> None:
+        self._connect_hue()
+
+    def _connect_vacuum(self) -> None:
+        if self._ha_mode_requested():
+            missing = self._ha_missing_fields()
+            if missing:
+                self._log("system", f"Home Assistant-lage aktivt men saknar: {', '.join(missing)}")
+                return
+            self._log("system", "Home Assistant används för dammsugaren. Uppdatera HA_* i .env vid behov.")
+            return
+        if not ROBOROCK_AVAILABLE:
+            self._log("system", "Roborock-stod saknas (python-miio). Installera beroenden.")
+            return
+
+        ip = simpledialog.askstring("Koppla Robo", "Dammsugarens IP-adress:", initialvalue=self.vacuum_ip or "")
+        if not ip:
+            return
+        token = simpledialog.askstring("Koppla Robo", "Token (32 tecken):", initialvalue=self.vacuum_token or "")
+        if not token:
+            return
+
+        ip = ip.strip()
+        token = token.strip()
+        if not _valid_host(ip):
+            self._log("system", "Ogiltig VACUUM_IP. Ange lokal IP, t.ex. 192.168.1.45.")
+            return
+        if not re.fullmatch(r"[0-9a-fA-F]{32}", token):
+            self._log("system", "Ogiltig VACUUM_TOKEN. Den ska vara 32 hex-tecken.")
+            return
+        self._save_env("VACUUM_IP", ip)
+        self._save_env("VACUUM_TOKEN", token)
+        self.vacuum_ip = ip
+        self.vacuum_token = token
+
+        def worker():
+            try:
+                vac = RoborockVacuum(ip, token)
+                status = vac.status()
+                with self.lock:
+                    self.vacuum = vac
+                self._log("system", f"Roborock ansluten ({ip}). Batteri: {getattr(status, 'battery', '?')}%")
+            except Exception as e:
+                self._log("system", f"Kunde inte ansluta Roborock: {e}")
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _auto_connect_vacuum(self) -> None:
+        def worker():
+            if self._ha_mode_requested():
+                missing = self._ha_missing_fields()
+                if missing:
+                    self._log("system", f"Home Assistant-lage aktivt men saknar: {', '.join(missing)}")
+                    return
+                try:
+                    st = self._ha_vacuum_state()
+                    attrs = st.get("attributes", {}) if isinstance(st, dict) else {}
+                    battery = attrs.get("battery_level", attrs.get("battery", "?"))
+                    state = st.get("state", "?") if isinstance(st, dict) else "?"
+                    self._log("system", f"Home Assistant vacuum ansluten: {self.ha_vacuum_entity_id} ({state}, {battery}% batteri).")
+                except Exception as e:
+                    self._log("system", f"Home Assistant vacuum kunde inte verifieras: {e}")
+                return
+
+            if not ROBOROCK_AVAILABLE:
+                return
+            if not self.vacuum_ip or not self.vacuum_token:
+                return
+            if not _valid_host(self.vacuum_ip) or not re.fullmatch(r"[0-9a-fA-F]{32}", self.vacuum_token):
+                return
+            try:
+                vac = RoborockVacuum(self.vacuum_ip, self.vacuum_token)
+                status = vac.status()
+                with self.lock:
+                    self.vacuum = vac
+                self._log("system", f"Roborock auto-ansluten ({self.vacuum_ip}). Batteri: {getattr(status, 'battery', '?')}%")
+            except Exception as e:
+                self._log("system", f"Roborock auto-anslutning misslyckades: {e}")
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _get_vacuum(self):
+        if not ROBOROCK_AVAILABLE:
+            raise RuntimeError("python-miio/Roborock-stod saknas.")
+        with self.lock:
+            if self.vacuum is not None:
+                return self.vacuum
+        if not self.vacuum_ip or not self.vacuum_token:
+            raise RuntimeError("VACUUM_IP/VACUUM_TOKEN saknas i .env.")
+        if not _valid_host(self.vacuum_ip):
+            raise RuntimeError("Ogiltig VACUUM_IP. Använd dammsugarens lokala IP-adress.")
+        if not re.fullmatch(r"[0-9a-fA-F]{32}", self.vacuum_token):
+            raise RuntimeError("Ogiltig VACUUM_TOKEN. Förväntar 32 hex-tecken.")
+        vac = RoborockVacuum(self.vacuum_ip, self.vacuum_token)
+        with self.lock:
+            self.vacuum = vac
+        return vac
+
+    def _handle_vacuum_command(self, text: str) -> str | None:
+        low = _normalize_text(text)
+        vac_keywords = [
+            "dammsugare", "roborock", "vacuum", "stada", "stada", "stadar",
+            "starta", "borja", "pausa", "stopp", "docka", "hem", "hitta"
+        ]
+        if not any(k in low for k in vac_keywords):
+            return None
+
+        if self._ha_mode_requested():
+            missing = self._ha_missing_fields()
+            if missing:
+                return f"Home Assistant-lage aktivt men saknar: {', '.join(missing)}."
+            try:
+                if any(k in low for k in ["starta", "borja", "stada", "clean", "resume"]):
+                    self._ha_call_vacuum_service("start")
+                    return "Startade dammsugaren via Home Assistant."
+                if any(k in low for k in ["pausa", "pause", "stopp"]):
+                    self._ha_call_vacuum_service("pause")
+                    return "Pausade dammsugaren via Home Assistant."
+                if any(k in low for k in ["docka", "hem", "ladda", "charge", "return"]):
+                    self._ha_call_vacuum_service("return_to_base")
+                    return "Skickade dammsugaren till dockan via Home Assistant."
+                if any(k in low for k in ["hitta", "find", "where are you"]):
+                    self._ha_call_vacuum_service("locate")
+                    return "Bad dammsugaren spela upp ett ljud via Home Assistant."
+                if any(k in low for k in ["status", "batteri", "battery"]):
+                    st = self._ha_vacuum_state()
+                    attrs = st.get("attributes", {}) if isinstance(st, dict) else {}
+                    battery = attrs.get("battery_level", attrs.get("battery", "?"))
+                    state = st.get("state", "?") if isinstance(st, dict) else "?"
+                    return f"Dammsugaren ar {state} och har {battery}% batteri."
+                st = self._ha_vacuum_state()
+                attrs = st.get("attributes", {}) if isinstance(st, dict) else {}
+                battery = attrs.get("battery_level", attrs.get("battery", "?"))
+                state = st.get("state", "?") if isinstance(st, dict) else "?"
+                return f"Dammsugaren ar {state} och har {battery}% batteri."
+            except Exception as e:
+                return f"Dammsugar-kommando via Home Assistant misslyckades: {e}"
+
+        try:
+            vac = self._get_vacuum()
+            if any(k in low for k in ["starta", "borja", "stada", "clean", "resume"]):
+                vac.start()
+                return "Startade dammsugaren."
+            if any(k in low for k in ["pausa", "pause", "stopp"]):
+                vac.pause()
+                return "Pausade dammsugaren."
+            if any(k in low for k in ["docka", "hem", "ladda", "charge", "return"]):
+                vac.home()
+                return "Skickade dammsugaren till dockan."
+            if any(k in low for k in ["hitta", "find", "where are you"]):
+                vac.find()
+                return "Bad dammsugaren spela upp ett ljud."
+            if any(k in low for k in ["status", "batteri", "battery"]):
+                st = vac.status()
+                return f"Dammsugaren har {getattr(st, 'battery', '?')}% batteri."
+            st = vac.status()
+            return f"Dammsugaren har {getattr(st, 'battery', '?')}% batteri."
+        except Exception as e:
+            return f"Dammsugar-kommando misslyckades: {e}"
 
     def _hue_get_groups_lights(self):
         if not self.hue_bridge_ip or not self.hue_app_key:
@@ -807,23 +1073,64 @@ class VoiceAssistantGUI:
                     self._queue_status("Status: listening")
                     continue
 
-                self._log("user", user_text)
-                hue_reply = self._handle_hue_command(user_text)
-                if hue_reply:
-                    self._log("assistant", hue_reply)
-                    self._queue_status("Status: speaking")
-                    self._speak(hue_reply, profile, engine)
-                    continue
-                answer = self._ask(user_text, profile.language)
-                self._log("assistant", answer)
-                self._queue_status("Status: speaking")
-                self._speak(answer, profile, engine)
+                self._process_user_text(user_text, profile, engine)
             except Exception as e:
                 self._log("system", f"Fel i loop: {e}")
             finally:
                 if self.running and not self.stop_event.is_set():
                     self._queue_status("Status: listening")
                 time.sleep(0.05)
+
+    def _process_user_text(self, user_text: str, profile: VoiceProfile, engine) -> None:
+        with self.lock:
+            tts_enabled = self.tts_enabled
+        self._log("user", user_text)
+        hue_reply = self._handle_hue_command(user_text)
+        if hue_reply:
+            self._log("assistant", hue_reply)
+            if tts_enabled:
+                self._queue_status("Status: speaking")
+                self._speak(hue_reply, profile, engine)
+            return
+        vac_reply = self._handle_vacuum_command(user_text)
+        if vac_reply:
+            self._log("assistant", vac_reply)
+            if tts_enabled:
+                self._queue_status("Status: speaking")
+                self._speak(vac_reply, profile, engine)
+            return
+        answer = self._ask(user_text, profile.language)
+        self._log("assistant", answer)
+        if tts_enabled:
+            self._queue_status("Status: speaking")
+            self._speak(answer, profile, engine)
+
+    def _send_text_query_event(self, _event=None):
+        self._send_text_query()
+
+    def _send_text_query(self) -> None:
+        text = self.text_input_var.get().strip()
+        if not text:
+            return
+        self.text_input_var.set("")
+
+        with self.lock:
+            profile = self.current_profile
+            engine = self.tts_engine
+
+        def worker():
+            try:
+                self._queue_status("Status: processing")
+                self._process_user_text(text, profile, engine)
+            except Exception as e:
+                self._log("system", f"Textfraga misslyckades: {e}")
+            finally:
+                if self.running and not self.stop_event.is_set():
+                    self._queue_status("Status: listening")
+                else:
+                    self._queue_status("Status: idle")
+
+        threading.Thread(target=worker, daemon=True).start()
 
 
 def main() -> None:
@@ -836,3 +1143,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
