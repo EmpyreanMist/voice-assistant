@@ -4,6 +4,7 @@ import queue
 import tempfile
 import threading
 import time
+import math
 from dataclasses import dataclass
 from pathlib import Path
 import tkinter as tk
@@ -68,7 +69,7 @@ class VoiceAssistantGUI:
         self.root.title("Voice Assistant")
         self.root.geometry("1080x760")
         self.root.minsize(980, 680)
-        self.root.configure(bg="#0b1120")
+        self.root.configure(bg="#05070d")
 
         load_dotenv(override=True)
         self.env_path = Path(__file__).resolve().parent / ".env"
@@ -97,6 +98,10 @@ class VoiceAssistantGUI:
 
         self.log_queue: queue.Queue[tuple[str, str]] = queue.Queue()
         self.status_queue: queue.Queue[str] = queue.Queue()
+        self.mic_level_queue: queue.Queue[float] = queue.Queue()
+        self.ai_level_queue: queue.Queue[float] = queue.Queue()
+        self.mic_level_current = 0.0
+        self.ai_level_current = 0.0
         self.lock = threading.Lock()
 
         self._start_input_hooks()
@@ -120,28 +125,29 @@ class VoiceAssistantGUI:
     def _setup_style(self) -> None:
         style = ttk.Style(self.root)
         style.theme_use("clam")
-        style.configure("App.TFrame", background="#0b1120")
-        style.configure("Card.TFrame", background="#111827")
-        style.configure("CardAlt.TFrame", background="#0f172a")
+        style.configure("App.TFrame", background="#05070d")
+        style.configure("Card.TFrame", background="#0b1020")
+        style.configure("CardAlt.TFrame", background="#0a1326")
 
-        style.configure("App.TLabel", background="#0b1120", foreground="#dbe7ff", font=("Segoe UI", 10))
-        style.configure("Card.TLabel", background="#111827", foreground="#dbe7ff", font=("Segoe UI", 10))
-        style.configure("Title.TLabel", background="#0b1120", foreground="#f8fbff", font=("Segoe UI Semibold", 24))
-        style.configure("Subtle.TLabel", background="#0b1120", foreground="#8ea3c5", font=("Segoe UI", 10))
-        style.configure("Section.TLabel", background="#111827", foreground="#a8c1e8", font=("Segoe UI Semibold", 10))
-        style.configure("Status.TLabel", background="#0f172a", foreground="#7dd3fc", font=("Segoe UI Semibold", 10))
+        style.configure("App.TLabel", background="#05070d", foreground="#d5ddf5", font=("Segoe UI", 10))
+        style.configure("Card.TLabel", background="#0b1020", foreground="#d5ddf5", font=("Segoe UI", 10))
+        style.configure("Title.TLabel", background="#05070d", foreground="#f3f6ff", font=("Segoe UI Semibold", 24))
+        style.configure("Subtle.TLabel", background="#05070d", foreground="#7f8fb4", font=("Segoe UI", 10))
+        style.configure("Section.TLabel", background="#0b1020", foreground="#9eb0d7", font=("Segoe UI Semibold", 10))
+        style.configure("Status.TLabel", background="#0a1326", foreground="#6ee7ff", font=("Segoe UI Semibold", 10))
+        style.configure("Meter.TLabel", background="#0a1326", foreground="#9fb0d6", font=("Segoe UI", 9))
 
         style.configure("App.TButton", font=("Segoe UI Semibold", 10), padding=(12, 9), borderwidth=0)
-        style.map("App.TButton", background=[("active", "#24324a"), ("!disabled", "#1b2538")], foreground=[("!disabled", "#e8f1ff")])
+        style.map("App.TButton", background=[("active", "#1d2740"), ("!disabled", "#141b2f")], foreground=[("!disabled", "#e8f1ff")])
 
         style.configure("Primary.TButton", font=("Segoe UI Semibold", 10), padding=(14, 10), borderwidth=0)
-        style.map("Primary.TButton", background=[("active", "#0ea5c8"), ("!disabled", "#06b6d4")], foreground=[("!disabled", "#04131a")])
+        style.map("Primary.TButton", background=[("active", "#0d89c4"), ("!disabled", "#12a5e2")], foreground=[("!disabled", "#03101a")])
 
         style.configure("Danger.TButton", font=("Segoe UI Semibold", 10), padding=(12, 9), borderwidth=0)
-        style.map("Danger.TButton", background=[("active", "#b91c1c"), ("!disabled", "#dc2626")], foreground=[("!disabled", "#fff1f2")])
+        style.map("Danger.TButton", background=[("active", "#9f1b34"), ("!disabled", "#c0264f")], foreground=[("!disabled", "#fff1f2")])
 
-        style.configure("App.TCombobox", padding=8, fieldbackground="#0f172a", background="#0f172a", foreground="#e5edff")
-        style.map("App.TCombobox", fieldbackground=[("readonly", "#0f172a")], selectbackground=[("readonly", "#1e293b")], selectforeground=[("readonly", "#e5edff")])
+        style.configure("App.TCombobox", padding=8, fieldbackground="#0a1326", background="#0a1326", foreground="#e5edff")
+        style.map("App.TCombobox", fieldbackground=[("readonly", "#0a1326")], selectbackground=[("readonly", "#1a2440")], selectforeground=[("readonly", "#e5edff")])
 
     def _build_ui(self) -> None:
         shell = ttk.Frame(self.root, style="App.TFrame", padding=20)
@@ -208,6 +214,12 @@ class VoiceAssistantGUI:
         self.stop_btn.pack(side=tk.LEFT, padx=(10, 0))
         ttk.Button(controls, text="Rensa text", command=self._clear_log, style="App.TButton").pack(side=tk.LEFT, padx=(10, 0))
 
+        meter_card = ttk.Frame(shell, style="CardAlt.TFrame", padding=(12, 10))
+        meter_card.pack(fill=tk.X, pady=(0, 12))
+        self.level_canvas = tk.Canvas(meter_card, height=16, bg="#070b16", highlightthickness=1, highlightbackground="#111a31", bd=0)
+        self.level_canvas.pack(fill=tk.X)
+        self.level_canvas.bind("<Configure>", lambda _e: self._draw_shared_level())
+
         text_bar = ttk.Frame(shell, style="CardAlt.TFrame", padding=(12, 10))
         text_bar.pack(fill=tk.X, pady=(0, 12))
         ttk.Label(text_bar, text="Skriv till assistenten:", style="Subtle.TLabel").pack(side=tk.LEFT)
@@ -228,19 +240,19 @@ class VoiceAssistantGUI:
             log_card,
             wrap=tk.WORD,
             font=("Cascadia Code", 10),
-            bg="#0f172a",
-            fg="#dbeafe",
-            insertbackground="#f8fafc",
+            bg="#090f1f",
+            fg="#d7def5",
+            insertbackground="#f3f6ff",
             relief=tk.FLAT,
             borderwidth=0,
             padx=14,
             pady=10,
         )
         self.log.pack(fill=tk.BOTH, expand=True)
-        self.log.tag_configure("system_prefix", foreground="#7dd3fc")
-        self.log.tag_configure("user_prefix", foreground="#86efac")
+        self.log.tag_configure("system_prefix", foreground="#67e8f9")
+        self.log.tag_configure("user_prefix", foreground="#7dd3fc")
         self.log.tag_configure("assistant_prefix", foreground="#f9a8d4")
-        self.log.tag_configure("msg", foreground="#dbeafe")
+        self.log.tag_configure("msg", foreground="#d7def5")
         self.log.configure(state=tk.DISABLED)
 
     def _clear_log(self) -> None:
@@ -538,6 +550,8 @@ class VoiceAssistantGUI:
         self.start_btn.configure(state=tk.NORMAL)
         self.stop_btn.configure(state=tk.DISABLED)
         self.status_var.set("Status: stopped")
+        self._queue_mic_level(0.0)
+        self._queue_ai_level(0.0)
         self._log("system", "Lyssning stoppad.")
 
     def _log(self, source: str, text: str) -> None:
@@ -546,6 +560,69 @@ class VoiceAssistantGUI:
     def _queue_status(self, status_text: str) -> None:
         self.status_queue.put(status_text)
 
+    def _queue_mic_level(self, level: float) -> None:
+        clamped = max(0.0, min(1.0, float(level)))
+        try:
+            while self.mic_level_queue.qsize() > 3:
+                self.mic_level_queue.get_nowait()
+        except Exception:
+            pass
+        self.mic_level_queue.put(clamped)
+
+    def _queue_ai_level(self, level: float) -> None:
+        clamped = max(0.0, min(1.0, float(level)))
+        try:
+            while self.ai_level_queue.qsize() > 3:
+                self.ai_level_queue.get_nowait()
+        except Exception:
+            pass
+        self.ai_level_queue.put(clamped)
+
+    def _normalize_rms_level(self, rms: float, floor_db: float = -56.0, ceil_db: float = -16.0) -> float:
+        if rms <= 1e-7:
+            return 0.0
+        db = 20.0 * math.log10(rms)
+        norm = (db - floor_db) / (ceil_db - floor_db)
+        norm = max(0.0, min(1.0, norm))
+        if norm < 0.08:
+            return 0.0
+        return norm ** 1.35
+
+    def _draw_shared_level(self) -> None:
+        if not hasattr(self, "level_canvas"):
+            return
+        c = self.level_canvas
+        c.delete("all")
+        w = max(10, c.winfo_width())
+        h = max(10, c.winfo_height())
+        c.create_rectangle(0, 0, w, h, fill="#070b16", outline="")
+        is_mic = self.mic_level_current >= self.ai_level_current
+        level = self.mic_level_current if is_mic else self.ai_level_current
+        fill = int((w - 4) * max(0.0, min(1.0, level)))
+        if fill > 0:
+            color = "#22d3ee" if is_mic else "#f472b6"
+            c.create_rectangle(2, 2, 2 + fill, h - 2, fill=color, outline="")
+
+    def _set_mic_level(self, level: float) -> None:
+        target = max(0.0, min(1.0, float(level)))
+        attack = 0.62
+        release = 0.38
+        alpha = attack if target > self.mic_level_current else release
+        self.mic_level_current = self.mic_level_current + (target - self.mic_level_current) * alpha
+        if self.mic_level_current < 0.02:
+            self.mic_level_current = 0.0
+        self._draw_shared_level()
+
+    def _set_ai_level(self, level: float) -> None:
+        target = max(0.0, min(1.0, float(level)))
+        attack = 0.60
+        release = 0.36
+        alpha = attack if target > self.ai_level_current else release
+        self.ai_level_current = self.ai_level_current + (target - self.ai_level_current) * alpha
+        if self.ai_level_current < 0.02:
+            self.ai_level_current = 0.0
+        self._draw_shared_level()
+
     def _drain_queues(self) -> None:
         while True:
             try:
@@ -553,6 +630,28 @@ class VoiceAssistantGUI:
             except queue.Empty:
                 break
             self.status_var.set(status_text)
+
+        mic_updated = False
+        while True:
+            try:
+                level = self.mic_level_queue.get_nowait()
+            except queue.Empty:
+                break
+            self._set_mic_level(level)
+            mic_updated = True
+        if not mic_updated:
+            self._set_mic_level(self.mic_level_current * 0.45)
+
+        ai_updated = False
+        while True:
+            try:
+                level = self.ai_level_queue.get_nowait()
+            except queue.Empty:
+                break
+            self._set_ai_level(level)
+            ai_updated = True
+        if not ai_updated:
+            self._set_ai_level(self.ai_level_current * 0.45)
 
         while True:
             try:
@@ -578,6 +677,36 @@ class VoiceAssistantGUI:
             raise RuntimeError("edge-tts saknas")
         communicate = Communicate(text=text, voice=voice, rate=rate, pitch=pitch)
         await communicate.save(out_path)
+
+    def _start_ai_meter_from_audio(self, audio: np.ndarray, samplerate: int) -> threading.Event:
+        stop_flag = threading.Event()
+        audio_arr = np.asarray(audio, dtype=np.float32)
+        if audio_arr.ndim > 1:
+            audio_arr = np.mean(audio_arr, axis=1)
+        if samplerate <= 0 or audio_arr.size == 0:
+            self._queue_ai_level(0.0)
+            return stop_flag
+
+        window = max(1, int(samplerate * 0.050))
+        hop = max(1, int(samplerate * 0.035))
+
+        def worker():
+            i = 0
+            n = int(audio_arr.shape[0])
+            while i < n and not stop_flag.is_set() and not self.stop_event.is_set():
+                seg = audio_arr[i:min(n, i + window)]
+                if seg.size == 0:
+                    level = 0.0
+                else:
+                    rms = float(np.sqrt(np.mean(np.square(seg))))
+                    level = self._normalize_rms_level(rms, floor_db=-60.0, ceil_db=-18.0)
+                self._queue_ai_level(level)
+                time.sleep(hop / float(samplerate))
+                i += hop
+            self._queue_ai_level(0.0)
+
+        threading.Thread(target=worker, daemon=True).start()
+        return stop_flag
 
     def _speak(self, text: str, profile: VoiceProfile, engine) -> None:
         if self.stop_event.is_set():
@@ -608,10 +737,14 @@ class VoiceAssistantGUI:
                             try:
                                 asyncio.run(self._edge_save_audio(chunk, voice, str(tmp), rate, pitch))
                                 audio, samplerate = sf.read(str(tmp), dtype="float32")
+                                audio_arr = np.asarray(audio, dtype=np.float32)
+                                meter_stop = self._start_ai_meter_from_audio(audio_arr, int(samplerate))
                                 with self.lock:
                                     output_idx = self.output_device_index
                                 sd.play(audio, samplerate, device=output_idx)
                                 sd.wait()
+                                meter_stop.set()
+                                self._queue_ai_level(0.0)
                                 chunk_ok = True
                                 break
                             except Exception as e:
@@ -632,8 +765,11 @@ class VoiceAssistantGUI:
         for chunk in chunks:
             if self.stop_event.is_set():
                 return
+            self._queue_ai_level(0.22)
             engine.say(chunk)
             engine.runAndWait()
+            self._queue_ai_level(0.0)
+        self._queue_ai_level(0.0)
 
     def _record_while_key_held(self, key_name: str) -> str:
         frames = []
@@ -651,6 +787,10 @@ class VoiceAssistantGUI:
                     chunk, overflowed = stream.read(BLOCK_SIZE)
                     if overflowed:
                         self._log("system", "Audio overflow upptackt.")
+                    mono = chunk.astype(np.float32) / 32768.0
+                    rms = float(np.sqrt(np.mean(np.square(mono))))
+                    level = self._normalize_rms_level(rms, floor_db=-56.0, ceil_db=-16.0)
+                    self._queue_mic_level(level)
                     frames.append(chunk.copy())
                     time.sleep(0.001)
         except Exception as e:
