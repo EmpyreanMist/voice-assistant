@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$SCRIPT_DIR"
+
+if [[ -f "./venv/Scripts/python.exe" ]]; then
+  PYTHON="./venv/Scripts/python.exe"
+elif [[ -f "./venv/bin/python" ]]; then
+  PYTHON="./venv/bin/python"
+elif command -v python >/dev/null 2>&1; then
+  PYTHON="python"
+else
+  echo "Kunde inte hitta Python. Installera Python 3.11+ och forsok igen."
+  exit 1
+fi
+
+"$PYTHON" "./voice_assistant_gui.py"

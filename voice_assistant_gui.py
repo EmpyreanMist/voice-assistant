@@ -43,6 +43,7 @@ EDGE_FALLBACK_PROSODY = [
 SHORT_PAUSES = os.getenv("TTS_SHORT_PAUSES", "1").strip().lower() in {"1", "true", "yes", "on"}
 REDUCE_COMMA_PAUSES = os.getenv("TTS_REDUCE_COMMA_PAUSES", "1").strip().lower() in {"1", "true", "yes", "on"}
 TTS_ENABLED_DEFAULT = os.getenv("TTS_ENABLED", "1").strip().lower() in {"1", "true", "yes", "on"}
+TTS_MAX_CHARS = int(os.getenv("TTS_MAX_CHARS", "150"))
 
 
 @dataclass
@@ -125,122 +126,196 @@ class VoiceAssistantGUI:
     def _setup_style(self) -> None:
         style = ttk.Style(self.root)
         style.theme_use("clam")
-        style.configure("App.TFrame", background="#05070d")
-        style.configure("Card.TFrame", background="#0b1020")
-        style.configure("CardAlt.TFrame", background="#0a1326")
+        style.configure("App.TFrame", background="#060b16")
+        style.configure("Hero.TFrame", background="#060b16")
+        style.configure("Card.TFrame", background="#0e1628")
+        style.configure("CardAlt.TFrame", background="#111e35")
 
-        style.configure("App.TLabel", background="#05070d", foreground="#d5ddf5", font=("Segoe UI", 10))
-        style.configure("Card.TLabel", background="#0b1020", foreground="#d5ddf5", font=("Segoe UI", 10))
-        style.configure("Title.TLabel", background="#05070d", foreground="#f3f6ff", font=("Segoe UI Semibold", 24))
-        style.configure("Subtle.TLabel", background="#05070d", foreground="#7f8fb4", font=("Segoe UI", 10))
-        style.configure("Section.TLabel", background="#0b1020", foreground="#9eb0d7", font=("Segoe UI Semibold", 10))
-        style.configure("Status.TLabel", background="#0a1326", foreground="#6ee7ff", font=("Segoe UI Semibold", 10))
-        style.configure("Meter.TLabel", background="#0a1326", foreground="#9fb0d6", font=("Segoe UI", 9))
+        style.configure("App.TLabel", background="#060b16", foreground="#d8e3f8", font=("Bahnschrift", 10))
+        style.configure("Card.TLabel", background="#0e1628", foreground="#d8e3f8", font=("Bahnschrift", 10))
+        style.configure("Title.TLabel", background="#060b16", foreground="#f4f7ff", font=("Bahnschrift SemiBold", 30))
+        style.configure("Subtle.TLabel", background="#060b16", foreground="#93a7cc", font=("Bahnschrift", 10))
+        style.configure("Section.TLabel", background="#0e1628", foreground="#a9c0ef", font=("Bahnschrift SemiBold", 10))
+        style.configure("Status.TLabel", background="#111e35", foreground="#d7ecff", font=("Bahnschrift SemiBold", 10))
+        style.configure("StatusHint.TLabel", background="#060b16", foreground="#7d93bc", font=("Bahnschrift", 10))
+        style.configure("Meter.TLabel", background="#111e35", foreground="#9ab4e5", font=("Bahnschrift", 9))
 
-        style.configure("App.TButton", font=("Segoe UI Semibold", 10), padding=(12, 9), borderwidth=0)
-        style.map("App.TButton", background=[("active", "#1d2740"), ("!disabled", "#141b2f")], foreground=[("!disabled", "#e8f1ff")])
+        style.configure("App.TButton", font=("Bahnschrift SemiBold", 10), padding=(13, 10), borderwidth=0)
+        style.map("App.TButton", background=[("active", "#2a426f"), ("!disabled", "#1c2d4a")], foreground=[("!disabled", "#e6f0ff")])
 
-        style.configure("Primary.TButton", font=("Segoe UI Semibold", 10), padding=(14, 10), borderwidth=0)
-        style.map("Primary.TButton", background=[("active", "#0d89c4"), ("!disabled", "#12a5e2")], foreground=[("!disabled", "#03101a")])
+        style.configure("Primary.TButton", font=("Bahnschrift SemiBold", 10), padding=(16, 11), borderwidth=0)
+        style.map("Primary.TButton", background=[("active", "#18a669"), ("!disabled", "#22c07a")], foreground=[("!disabled", "#041b0f")])
 
-        style.configure("Danger.TButton", font=("Segoe UI Semibold", 10), padding=(12, 9), borderwidth=0)
-        style.map("Danger.TButton", background=[("active", "#9f1b34"), ("!disabled", "#c0264f")], foreground=[("!disabled", "#fff1f2")])
+        style.configure("Danger.TButton", font=("Bahnschrift SemiBold", 10), padding=(13, 10), borderwidth=0)
+        style.map("Danger.TButton", background=[("active", "#b0293a"), ("!disabled", "#d74255")], foreground=[("!disabled", "#fff4f6")])
 
-        style.configure("App.TCombobox", padding=8, fieldbackground="#0a1326", background="#0a1326", foreground="#e5edff")
-        style.map("App.TCombobox", fieldbackground=[("readonly", "#0a1326")], selectbackground=[("readonly", "#1a2440")], selectforeground=[("readonly", "#e5edff")])
+        style.configure("App.TCombobox", padding=8, fieldbackground="#111e35", background="#111e35", foreground="#ecf3ff")
+        style.map("App.TCombobox", fieldbackground=[("readonly", "#111e35")], selectbackground=[("readonly", "#1f3155")], selectforeground=[("readonly", "#ecf3ff")])
+        style.configure("App.TEntry", fieldbackground="#111e35", background="#111e35", foreground="#ecf3ff", insertcolor="#f0f5ff")
 
     def _build_ui(self) -> None:
-        shell = ttk.Frame(self.root, style="App.TFrame", padding=20)
+        shell = ttk.Frame(self.root, style="App.TFrame", padding=18)
         shell.pack(fill=tk.BOTH, expand=True)
+        shell.columnconfigure(0, weight=1)
+        shell.rowconfigure(1, weight=1)
 
-        header = ttk.Frame(shell, style="App.TFrame")
-        header.pack(fill=tk.X)
-        ttk.Label(header, text="Voice Assistant", style="Title.TLabel").pack(side=tk.LEFT)
+        header = ttk.Frame(shell, style="Hero.TFrame")
+        header.grid(row=0, column=0, sticky="ew")
+        header.columnconfigure(0, weight=1)
+        header_left = ttk.Frame(header, style="Hero.TFrame")
+        header_left.grid(row=0, column=0, sticky="ew", padx=(0, 14))
+        self.header_title = ttk.Label(header_left, text="Voice Assistant", style="Title.TLabel")
+        self.header_title.pack(anchor="w")
         self.status_var = tk.StringVar(value="Status: idle")
-        status_pill = ttk.Frame(header, style="CardAlt.TFrame", padding=(12, 8))
-        status_pill.pack(side=tk.RIGHT)
+        status_pill = ttk.Frame(header, style="CardAlt.TFrame", padding=(12, 7))
+        status_pill.grid(row=0, column=1, sticky="ne", pady=(4, 0))
+        self.status_dot = tk.Canvas(status_pill, width=10, height=10, bg="#111e35", bd=0, highlightthickness=0)
+        self.status_dot.pack(side=tk.LEFT, padx=(0, 7))
+        self.status_dot_id = self.status_dot.create_oval(1, 1, 9, 9, fill="#6b7fa6", outline="")
         ttk.Label(status_pill, textvariable=self.status_var, style="Status.TLabel").pack()
-        ttk.Label(shell, text="Push-to-talk med OpenAI, Edge TTS, Hue och Spotify-kontroll", style="Subtle.TLabel").pack(anchor="w", pady=(2, 14))
+        self.status_hint_var = tk.StringVar(value="Tryck Start och hall in push-to-talk for att prata.")
+        self.header_subtitle = ttk.Label(
+            header_left,
+            text="Push-to-talk med OpenAI, Edge TTS, Hue, Spotify och Home Assistant",
+            style="Subtle.TLabel",
+            justify=tk.LEFT,
+        )
+        self.header_subtitle.pack(anchor="w", pady=(0, 2))
+        self.header_hint = ttk.Label(
+            header_left,
+            textvariable=self.status_hint_var,
+            style="StatusHint.TLabel",
+            justify=tk.LEFT,
+        )
+        self.header_hint.pack(anchor="w")
+        header_left.bind("<Configure>", self._on_header_resize)
 
-        panel = ttk.Frame(shell, style="Card.TFrame", padding=16)
-        panel.pack(fill=tk.X)
-        ttk.Label(panel, text="Inställningar", style="Section.TLabel").grid(row=0, column=0, sticky="w", columnspan=6, pady=(0, 10))
+        content = ttk.Frame(shell, style="App.TFrame")
+        content.grid(row=1, column=0, sticky="nsew", pady=(10, 0))
+        content.columnconfigure(0, weight=0)
+        content.columnconfigure(1, weight=1)
+        content.rowconfigure(0, weight=1)
 
-        ttk.Label(panel, text="Rostprofil", style="Card.TLabel").grid(row=1, column=0, sticky="w")
+        left = ttk.Frame(content, style="App.TFrame")
+        left.grid(row=0, column=0, sticky="nsw", padx=(0, 12))
+
+        settings_card = ttk.Frame(left, style="Card.TFrame", padding=14)
+        settings_card.pack(fill=tk.X)
+        ttk.Label(settings_card, text="Inställningar", style="Section.TLabel").grid(row=0, column=0, sticky="w", columnspan=3, pady=(0, 10))
+
+        ttk.Label(settings_card, text="Rostprofil", style="Card.TLabel").grid(row=1, column=0, sticky="w")
         self.profile_var = tk.StringVar(value=self.current_profile.label)
-        self.profile_combo = ttk.Combobox(panel, textvariable=self.profile_var, values=[p.label for p in VOICE_PROFILES], state="readonly", width=32, style="App.TCombobox")
-        self.profile_combo.grid(row=1, column=1, sticky="ew", padx=(8, 14))
+        self.profile_combo = ttk.Combobox(
+            settings_card,
+            textvariable=self.profile_var,
+            values=[p.label for p in VOICE_PROFILES],
+            state="readonly",
+            width=30,
+            style="App.TCombobox",
+        )
+        self.profile_combo.grid(row=1, column=1, columnspan=2, sticky="ew", padx=(8, 0))
         self.profile_combo.bind("<<ComboboxSelected>>", self._on_profile_changed)
 
-        ttk.Label(panel, text="Push-to-talk", style="Card.TLabel").grid(row=1, column=2, sticky="w")
+        ttk.Label(settings_card, text="Push-to-talk", style="Card.TLabel").grid(row=2, column=0, sticky="w", pady=(10, 0))
         self.keybind_var = tk.StringVar(value=self.keybind)
-        self.keybind_entry = ttk.Entry(panel, textvariable=self.keybind_var, width=14)
-        self.keybind_entry.grid(row=1, column=3, sticky="w", padx=(8, 6))
-        self.bind_btn = ttk.Button(panel, text="Satt tangent", command=self._set_keybind, style="App.TButton")
-        self.bind_btn.grid(row=1, column=4, sticky="w")
+        self.keybind_entry = ttk.Entry(settings_card, textvariable=self.keybind_var, width=10, style="App.TEntry")
+        self.keybind_entry.grid(row=2, column=1, sticky="w", padx=(8, 6), pady=(10, 0))
+        self.bind_btn = ttk.Button(settings_card, text="Byt", command=self._set_keybind, style="App.TButton")
+        self.bind_btn.grid(row=2, column=2, sticky="w", pady=(10, 0))
 
-        ttk.Label(panel, text="Mikrofon", style="Card.TLabel").grid(row=2, column=0, sticky="w", pady=(10, 0))
+        ttk.Label(settings_card, text="Mikrofon", style="Card.TLabel").grid(row=3, column=0, sticky="w", pady=(10, 0))
         self.input_var = tk.StringVar(value=self._input_label_for_index(self.input_device_index))
-        self.input_combo = ttk.Combobox(panel, textvariable=self.input_var, values=[label for _, label in self.input_devices], state="readonly", width=56, style="App.TCombobox")
-        self.input_combo.grid(row=2, column=1, columnspan=4, sticky="ew", padx=(8, 0), pady=(10, 0))
+        self.input_combo = ttk.Combobox(
+            settings_card,
+            textvariable=self.input_var,
+            values=[label for _, label in self.input_devices],
+            state="readonly",
+            width=30,
+            style="App.TCombobox",
+        )
+        self.input_combo.grid(row=3, column=1, columnspan=2, sticky="ew", padx=(8, 0), pady=(10, 0))
         self.input_combo.bind("<<ComboboxSelected>>", self._on_input_changed)
 
-        ttk.Label(panel, text="Hogtalare", style="Card.TLabel").grid(row=3, column=0, sticky="w", pady=(10, 0))
+        ttk.Label(settings_card, text="Hogtalare", style="Card.TLabel").grid(row=4, column=0, sticky="w", pady=(10, 0))
         self.output_var = tk.StringVar(value=self._output_label_for_index(self.output_device_index))
-        self.output_combo = ttk.Combobox(panel, textvariable=self.output_var, values=[label for _, label in self.output_devices], state="readonly", width=56, style="App.TCombobox")
-        self.output_combo.grid(row=3, column=1, columnspan=4, sticky="ew", padx=(8, 0), pady=(10, 0))
+        self.output_combo = ttk.Combobox(
+            settings_card,
+            textvariable=self.output_var,
+            values=[label for _, label in self.output_devices],
+            state="readonly",
+            width=30,
+            style="App.TCombobox",
+        )
+        self.output_combo.grid(row=4, column=1, columnspan=2, sticky="ew", padx=(8, 0), pady=(10, 0))
         self.output_combo.bind("<<ComboboxSelected>>", self._on_output_changed)
 
-        ttk.Label(panel, text="Svarslage", style="Card.TLabel").grid(row=4, column=0, sticky="w", pady=(10, 0))
+        ttk.Label(settings_card, text="Svarslage", style="Card.TLabel").grid(row=5, column=0, sticky="w", pady=(10, 0))
         self.response_mode_var = tk.StringVar(value="Tal + text" if self.tts_enabled else "Endast text")
         self.response_mode_combo = ttk.Combobox(
-            panel,
+            settings_card,
             textvariable=self.response_mode_var,
             values=["Tal + text", "Endast text"],
             state="readonly",
-            width=20,
+            width=30,
             style="App.TCombobox",
         )
-        self.response_mode_combo.grid(row=4, column=1, sticky="w", padx=(8, 0), pady=(10, 0))
+        self.response_mode_combo.grid(row=5, column=1, columnspan=2, sticky="ew", padx=(8, 0), pady=(10, 0))
         self.response_mode_combo.bind("<<ComboboxSelected>>", self._on_response_mode_changed)
 
-        panel.columnconfigure(1, weight=1)
+        settings_card.columnconfigure(1, weight=1)
 
-        controls = ttk.Frame(shell, style="App.TFrame", padding=(0, 12, 0, 12))
+        controls = ttk.Frame(left, style="App.TFrame", padding=(0, 12, 0, 10))
         controls.pack(fill=tk.X)
-        self.start_btn = ttk.Button(controls, text="Start Listening", command=self.start, style="Primary.TButton")
+        self.start_btn = ttk.Button(controls, text="Starta", command=self.start, style="Primary.TButton")
         self.start_btn.pack(side=tk.LEFT)
-        self.stop_btn = ttk.Button(controls, text="Stop", command=self.stop, state=tk.DISABLED, style="Danger.TButton")
+        self.stop_btn = ttk.Button(controls, text="Stoppa", command=self.stop, state=tk.DISABLED, style="Danger.TButton")
         self.stop_btn.pack(side=tk.LEFT, padx=(10, 0))
         ttk.Button(controls, text="Rensa text", command=self._clear_log, style="App.TButton").pack(side=tk.LEFT, padx=(10, 0))
 
-        meter_card = ttk.Frame(shell, style="CardAlt.TFrame", padding=(12, 10))
-        meter_card.pack(fill=tk.X, pady=(0, 12))
-        self.level_canvas = tk.Canvas(meter_card, height=16, bg="#070b16", highlightthickness=1, highlightbackground="#111a31", bd=0)
+        tips_card = ttk.Frame(left, style="CardAlt.TFrame", padding=(14, 12))
+        tips_card.pack(fill=tk.X)
+        ttk.Label(tips_card, text="Snabbtips", style="Section.TLabel").pack(anchor="w")
+        ttk.Label(tips_card, text="1. Tryck Start", style="Card.TLabel").pack(anchor="w", pady=(6, 0))
+        ttk.Label(tips_card, text="2. Hall in vald push-to-talk", style="Card.TLabel").pack(anchor="w")
+        ttk.Label(tips_card, text="3. Slapp och fa svar direkt", style="Card.TLabel").pack(anchor="w")
+
+        right = ttk.Frame(content, style="App.TFrame")
+        right.grid(row=0, column=1, sticky="nsew")
+        right.columnconfigure(0, weight=1)
+        right.rowconfigure(2, weight=1)
+
+        meter_card = ttk.Frame(right, style="CardAlt.TFrame", padding=(12, 10))
+        meter_card.grid(row=0, column=0, sticky="ew")
+        meter_head = ttk.Frame(meter_card, style="CardAlt.TFrame")
+        meter_head.pack(fill=tk.X, pady=(0, 6))
+        ttk.Label(meter_head, text="Ljudniva", style="Section.TLabel").pack(side=tk.LEFT)
+        ttk.Label(meter_head, text="Mic", style="Meter.TLabel").pack(side=tk.RIGHT, padx=(12, 0))
+        ttk.Label(meter_head, text="AI", style="Meter.TLabel").pack(side=tk.RIGHT)
+        self.level_canvas = tk.Canvas(meter_card, height=18, bg="#0b1222", highlightthickness=1, highlightbackground="#1d2b46", bd=0)
         self.level_canvas.pack(fill=tk.X)
         self.level_canvas.bind("<Configure>", lambda _e: self._draw_shared_level())
 
-        text_bar = ttk.Frame(shell, style="CardAlt.TFrame", padding=(12, 10))
-        text_bar.pack(fill=tk.X, pady=(0, 12))
-        ttk.Label(text_bar, text="Skriv till assistenten:", style="Subtle.TLabel").pack(side=tk.LEFT)
+        text_bar = ttk.Frame(right, style="CardAlt.TFrame", padding=(12, 10))
+        text_bar.grid(row=1, column=0, sticky="ew", pady=(10, 10))
+        ttk.Label(text_bar, text="Skriv till assistenten", style="Subtle.TLabel").pack(side=tk.LEFT)
         self.text_input_var = tk.StringVar()
-        self.text_input_entry = ttk.Entry(text_bar, textvariable=self.text_input_var)
+        self.text_input_entry = ttk.Entry(text_bar, textvariable=self.text_input_var, style="App.TEntry")
         self.text_input_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(10, 10))
         self.text_input_entry.bind("<Return>", self._send_text_query_event)
         self.send_btn = ttk.Button(text_bar, text="Skicka", command=self._send_text_query, style="App.TButton")
         self.send_btn.pack(side=tk.RIGHT)
 
-        log_card = ttk.Frame(shell, style="Card.TFrame", padding=(0, 0, 0, 0))
-        log_card.pack(fill=tk.BOTH, expand=True)
+        log_card = ttk.Frame(right, style="Card.TFrame", padding=(0, 0, 0, 0))
+        log_card.grid(row=2, column=0, sticky="nsew")
         title_row = ttk.Frame(log_card, style="Card.TFrame", padding=(14, 10, 14, 8))
         title_row.pack(fill=tk.X)
-        ttk.Label(title_row, text="Activity", style="Section.TLabel").pack(side=tk.LEFT)
+        ttk.Label(title_row, text="Konversation", style="Section.TLabel").pack(side=tk.LEFT)
 
         self.log = scrolledtext.ScrolledText(
             log_card,
             wrap=tk.WORD,
             font=("Cascadia Code", 10),
-            bg="#090f1f",
+            bg="#0b1222",
             fg="#d7def5",
             insertbackground="#f3f6ff",
             relief=tk.FLAT,
@@ -249,11 +324,21 @@ class VoiceAssistantGUI:
             pady=10,
         )
         self.log.pack(fill=tk.BOTH, expand=True)
-        self.log.tag_configure("system_prefix", foreground="#67e8f9")
-        self.log.tag_configure("user_prefix", foreground="#7dd3fc")
-        self.log.tag_configure("assistant_prefix", foreground="#f9a8d4")
-        self.log.tag_configure("msg", foreground="#d7def5")
+        self.log.tag_configure("system_prefix", foreground="#62c8ff")
+        self.log.tag_configure("user_prefix", foreground="#8af5bb")
+        self.log.tag_configure("assistant_prefix", foreground="#ffd286")
+        self.log.tag_configure("system_msg", foreground="#d7e9ff")
+        self.log.tag_configure("user_msg", foreground="#ddfce9")
+        self.log.tag_configure("assistant_msg", foreground="#fff4db")
         self.log.configure(state=tk.DISABLED)
+        self._apply_status_visuals("Status: idle")
+
+    def _on_header_resize(self, event) -> None:
+        wrap = max(260, int(event.width) - 8)
+        if hasattr(self, "header_subtitle"):
+            self.header_subtitle.configure(wraplength=wrap)
+        if hasattr(self, "header_hint"):
+            self.header_hint.configure(wraplength=wrap)
 
     def _clear_log(self) -> None:
         self.log_queue = queue.Queue()
@@ -528,7 +613,7 @@ class VoiceAssistantGUI:
         self.running = True
         self.start_btn.configure(state=tk.DISABLED)
         self.stop_btn.configure(state=tk.NORMAL)
-        self.status_var.set("Status: listening")
+        self._apply_status_visuals("Status: listening")
         self.worker_thread = threading.Thread(target=self._run_loop, daemon=True)
         self.worker_thread.start()
         self._log("system", "Lyssning startad.")
@@ -549,7 +634,7 @@ class VoiceAssistantGUI:
             pass
         self.start_btn.configure(state=tk.NORMAL)
         self.stop_btn.configure(state=tk.DISABLED)
-        self.status_var.set("Status: stopped")
+        self._apply_status_visuals("Status: stopped")
         self._queue_mic_level(0.0)
         self._queue_ai_level(0.0)
         self._log("system", "Lyssning stoppad.")
@@ -588,6 +673,23 @@ class VoiceAssistantGUI:
             return 0.0
         return norm ** 1.35
 
+    def _apply_status_visuals(self, status_text: str) -> None:
+        raw = (status_text or "").strip().lower()
+        state = raw.replace("status:", "").strip()
+        labels = {
+            "idle": ("Redo", "Tryck Start och hall in push-to-talk for att prata.", "#6b7fa6"),
+            "listening": ("Lyssnar", "Vantar pa att du trycker push-to-talk.", "#4de28b"),
+            "recording": ("Spelar in", "Prata nu. Slapp push-to-talk nar du ar klar.", "#2ed3f1"),
+            "processing": ("Tanker", "Transkriberar och forbereder svar.", "#f2c94c"),
+            "speaking": ("Pratar", "Svarar med vald rostprofil.", "#ff9f67"),
+            "stopped": ("Stoppad", "Lyssning ar stoppad tills du startar igen.", "#ff6b88"),
+        }
+        label, hint, color = labels.get(state, ("Aktiv", "Assistant kor.", "#7fa0ff"))
+        self.status_var.set(f"Status: {label}")
+        self.status_hint_var.set(hint)
+        if hasattr(self, "status_dot") and hasattr(self, "status_dot_id"):
+            self.status_dot.itemconfigure(self.status_dot_id, fill=color)
+
     def _draw_shared_level(self) -> None:
         if not hasattr(self, "level_canvas"):
             return
@@ -595,13 +697,13 @@ class VoiceAssistantGUI:
         c.delete("all")
         w = max(10, c.winfo_width())
         h = max(10, c.winfo_height())
-        c.create_rectangle(0, 0, w, h, fill="#070b16", outline="")
+        c.create_rectangle(0, 0, w, h, fill="#0b1222", outline="")
         is_mic = self.mic_level_current >= self.ai_level_current
         level = self.mic_level_current if is_mic else self.ai_level_current
-        fill = int((w - 4) * max(0.0, min(1.0, level)))
+        fill = int((w - 6) * max(0.0, min(1.0, level)))
         if fill > 0:
-            color = "#22d3ee" if is_mic else "#f472b6"
-            c.create_rectangle(2, 2, 2 + fill, h - 2, fill=color, outline="")
+            color = "#18d7ff" if is_mic else "#ffac5f"
+            c.create_rectangle(3, 3, 3 + fill, h - 3, fill=color, outline="")
 
     def _set_mic_level(self, level: float) -> None:
         target = max(0.0, min(1.0, float(level)))
@@ -629,7 +731,7 @@ class VoiceAssistantGUI:
                 status_text = self.status_queue.get_nowait()
             except queue.Empty:
                 break
-            self.status_var.set(status_text)
+            self._apply_status_visuals(status_text)
 
         mic_updated = False
         while True:
@@ -660,9 +762,10 @@ class VoiceAssistantGUI:
                 break
             prefix = {"user": "Du", "assistant": "Assistent", "system": "System"}.get(source, "Log")
             tag = {"user": "user_prefix", "assistant": "assistant_prefix", "system": "system_prefix"}.get(source, "system_prefix")
+            msg_tag = {"user": "user_msg", "assistant": "assistant_msg", "system": "system_msg"}.get(source, "system_msg")
             self.log.configure(state=tk.NORMAL)
             self.log.insert(tk.END, f"{prefix}: ", tag)
-            self.log.insert(tk.END, f"{text}\n\n", "msg")
+            self.log.insert(tk.END, f"{text}\n\n", msg_tag)
             self.log.see(tk.END)
             self.log.configure(state=tk.DISABLED)
 
@@ -715,6 +818,8 @@ class VoiceAssistantGUI:
             text,
             short_pauses=SHORT_PAUSES,
             reduce_comma_pauses=REDUCE_COMMA_PAUSES,
+            max_chars=max(80, min(260, TTS_MAX_CHARS)),
+            language=profile.language,
         )
         if not chunks:
             return
@@ -886,19 +991,19 @@ class VoiceAssistantGUI:
         with self.lock:
             tts_enabled = self.tts_enabled
         self._log("user", user_text)
-        hue_reply = self.integrations.handle_hue_command(user_text)
-        if hue_reply:
-            self._log("assistant", hue_reply)
-            if tts_enabled:
-                self._queue_status("Status: speaking")
-                self._speak(hue_reply, profile, engine)
-            return
         spotify_reply = self.integrations.handle_spotify_command(user_text)
         if spotify_reply:
             self._log("assistant", spotify_reply)
             if tts_enabled:
                 self._queue_status("Status: speaking")
                 self._speak(spotify_reply, profile, engine)
+            return
+        hue_reply = self.integrations.handle_hue_command(user_text)
+        if hue_reply:
+            self._log("assistant", hue_reply)
+            if tts_enabled:
+                self._queue_status("Status: speaking")
+                self._speak(hue_reply, profile, engine)
             return
         vac_reply = self.integrations.handle_vacuum_command(user_text)
         if vac_reply:

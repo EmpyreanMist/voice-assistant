@@ -63,10 +63,19 @@ def match_tokens(text: str) -> set[str]:
     return out
 
 
-def clean_text_for_tts(text: str, short_pauses: bool, reduce_comma_pauses: bool) -> str:
+def clean_text_for_tts(text: str, short_pauses: bool, reduce_comma_pauses: bool, language: str = "sv") -> str:
     cleaned = text.replace("\r\n", "\n").replace("\r", "\n")
-    cleaned = re.sub(r"\n{2,}", ". ", cleaned)
+    cleaned = re.sub(r"\n{2,}", ", ", cleaned)
     cleaned = cleaned.replace("\n", " ")
+    cleaned = re.sub(r"\[([^\]]+)\]\((https?://[^)]+)\)", r"\1", cleaned)
+    link_count = 0
+
+    def _hide_link(match: re.Match[str]) -> str:
+        nonlocal link_count
+        link_count += 1
+        return " "
+
+    cleaned = re.sub(r"(https?://\S+|www\.\S+)", _hide_link, cleaned)
     cleaned = cleaned.replace("**", "").replace("`", "").replace("#", "")
     cleaned = cleaned.replace("* ", "").replace("- ", "")
     cleaned = cleaned.replace("\\(", "").replace("\\)", "")
@@ -80,11 +89,27 @@ def clean_text_for_tts(text: str, short_pauses: bool, reduce_comma_pauses: bool)
     if reduce_comma_pauses:
         cleaned = re.sub(r",\s*", " ", cleaned)
     cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    if link_count > 0:
+        link_note = "Jag har skickat en lank." if language == "sv" else "I sent a link."
+        if cleaned and not cleaned.endswith((".", "!", "?")):
+            cleaned += "."
+        cleaned = f"{cleaned} {link_note}".strip()
     return cleaned
 
 
-def split_for_tts(text: str, short_pauses: bool, reduce_comma_pauses: bool, max_chars: int = 260) -> list[str]:
-    text = clean_text_for_tts(text, short_pauses=short_pauses, reduce_comma_pauses=reduce_comma_pauses)
+def split_for_tts(
+    text: str,
+    short_pauses: bool,
+    reduce_comma_pauses: bool,
+    max_chars: int = 260,
+    language: str = "sv",
+) -> list[str]:
+    text = clean_text_for_tts(
+        text,
+        short_pauses=short_pauses,
+        reduce_comma_pauses=reduce_comma_pauses,
+        language=language,
+    )
     if not text:
         return []
     parts = re.split(r"(?<=[.!?])\s+", text)

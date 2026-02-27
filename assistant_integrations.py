@@ -206,19 +206,77 @@ class AssistantIntegrations:
             merged_params["device_id"] = fallback_device_id
             return self._spotify_request(method, path, payload=payload, params=merged_params)
 
-    def _spotify_search_track(self, query: str):
+    def _spotify_search_track(self, query: str, artist: str = ""):
         if not query:
             return None
-        res = self._spotify_request(
-            "GET",
-            "/search",
-            params={"q": query, "type": "track", "limit": 1, "market": self.spotify_market},
-        )
-        tracks = (res or {}).get("tracks", {})
-        items = tracks.get("items", []) if isinstance(tracks, dict) else []
-        if not items:
-            return None
-        return items[0]
+        queries = []
+        track_part = query.strip()
+        artist_part = artist.strip()
+        if track_part and artist_part:
+            queries.append(f'track:"{track_part}" artist:"{artist_part}"')
+        queries.append(track_part)
+        if track_part and artist_part:
+            queries.append(f"{track_part} {artist_part}")
+
+        query_track_norm = normalize_text(track_part)
+        query_track_tokens = match_tokens(track_part)
+        query_artist_norm = normalize_text(artist_part)
+        query_artist_tokens = match_tokens(artist_part)
+        best_any = None
+        best_any_score = -1.0
+        best_with_artist = None
+        best_with_artist_score = -1.0
+
+        def score_item(item: dict) -> tuple[float, float]:
+            item_name = str(item.get("name", "")).strip()
+            item_name_norm = normalize_text(item_name)
+            item_track_tokens = match_tokens(item_name)
+            artists_text = ", ".join(a.get("name", "") for a in item.get("artists", []) if a.get("name"))
+            item_artist_norm = normalize_text(artists_text)
+            item_artist_tokens = match_tokens(artists_text)
+
+            track_overlap = 0.0
+            if query_track_tokens:
+                track_overlap = len(query_track_tokens & item_track_tokens) / max(1, len(query_track_tokens))
+            artist_overlap = 0.0
+            if query_artist_tokens:
+                artist_overlap = len(query_artist_tokens & item_artist_tokens) / max(1, len(query_artist_tokens))
+
+            score = 0.0
+            score += track_overlap * 4.0
+            if query_track_norm and query_track_norm == item_name_norm:
+                score += 2.8
+            elif query_track_norm and query_track_norm in item_name_norm:
+                score += 1.4
+            score += artist_overlap * 5.0
+            if query_artist_norm and query_artist_norm in item_artist_norm:
+                score += 2.5
+            return score, artist_overlap
+
+        for q in queries:
+            res = self._spotify_request(
+                "GET",
+                "/search",
+                params={"q": q, "type": "track", "limit": 10, "market": self.spotify_market},
+            )
+            tracks = (res or {}).get("tracks", {})
+            items = tracks.get("items", []) if isinstance(tracks, dict) else []
+            if not items:
+                continue
+            artist_low = normalize_text(artist_part)
+            for item in items:
+                score, artist_overlap = score_item(item)
+                if score > best_any_score:
+                    best_any = item
+                    best_any_score = score
+                if artist_low:
+                    if artist_overlap > 0.0 and score > best_with_artist_score:
+                        best_with_artist = item
+                        best_with_artist_score = score
+
+        if artist_low:
+            return best_with_artist
+        return best_any
 
     def _spotify_is_playing(self) -> bool | None:
         try:
@@ -257,15 +315,40 @@ class AssistantIntegrations:
         return None
 
     def _extract_spotify_track_query(self, low_text: str) -> str:
-        match = re.search(r"(?:spela|play)\s+(?:upp\s+)?(.+?)(?:\s+pa\s+spotify)?$", low_text)
+        match = re.search(r"(?:spela|play|sla pa|starta)\s*[,:\-]?\s*(?:upp\s+)?(.+?)(?:\s+pa\s+spotify)?$", low_text)
         if not match:
             return ""
         query = match.group(1).strip()
+        query = query.strip(",.:- ")
         query = re.sub(r"^(en|ett|the)\s+", "", query).strip()
         cleanup_suffixes = [r"\b(pa|i)\s+\d+\s*%", r"\bvid\b.*$", r"\bfran\b.*$", r"\btill\b.*$"]
         for pattern in cleanup_suffixes:
             query = re.sub(pattern, "", query).strip()
+        query = re.sub(r"\s*,\s*", " ", query).strip()
         return query
+
+    def _split_track_artist(self, query: str) -> tuple[str, str]:
+        q = (query or "").strip()
+        if not q:
+            return "", ""
+        m = re.search(r"^(.+?)\s+(?:med|by)\s+(.+)$", q)
+        if not m:
+            return q, ""
+        return m.group(1).strip(), m.group(2).strip()
+
+    def _looks_like_music_request(self, low: str) -> bool:
+        if any(
+            k in low for k in [
+                "spotify", "pa spotify", "on spotify", "musik", "lat", "song", "playlist", "album", "artist"
+            ]
+        ):
+            return True
+        if any(k in low for k in ["nasta", "next", "foregaende", "previous", "pause", "pausa", "volym", "volume", "seek", "spola"]):
+            return True
+        # Typical spoken track request: "sla pa <track> med/by <artist>"
+        if re.search(r"(?:spela|play|sla pa|starta)\s*[,:\-]?\s+.+\s+(?:med|by)\s+.+", low):
+            return True
+        return False
 
     def _hue_get_groups_lights(self):
         if not self.hue_bridge_ip or not self.hue_app_key:
@@ -324,6 +407,7 @@ class AssistantIntegrations:
     def _hue_color_payload(self, low: str) -> tuple[dict, str] | None:
         color_map = [
             (["indigo"], {"on": True, "hue": 50000, "sat": 220, "bri": 180}, "indigo"),
+            (["magenta", "fuchsia"], {"on": True, "hue": 61000, "sat": 235, "bri": 205}, "magenta"),
             (["bla", "blå", "blue"], {"on": True, "hue": 46920, "sat": 254, "bri": 200}, "bla"),
             (["rod", "röd", "red"], {"on": True, "hue": 0, "sat": 254, "bri": 200}, "rod"),
             (["gron", "grön", "green"], {"on": True, "hue": 25500, "sat": 254, "bri": 200}, "gron"),
@@ -443,8 +527,17 @@ class AssistantIntegrations:
             "spotify", "musik", "lat", "song", "playlist", "album", "artist",
             "spela", "play", "pausa", "pause", "nasta", "next", "foregaende", "previous",
             "volym", "volume", "skip", "hoppa", "vad spelas", "what is playing", "spola", "seek",
+            "sla pa", "starta",
         ]
         if not any(k in low for k in spotify_keywords):
+            return None
+        has_music_context = self._looks_like_music_request(low)
+        if not has_music_context and any(
+            k in low for k in [
+                "dammsugare", "dammsugaren", "roborock", "vacuum",
+                "lampa", "lampor", "hue", "philips", "ljus"
+            ]
+        ):
             return None
         missing = self._spotify_missing_fields()
         if missing:
@@ -495,7 +588,8 @@ class AssistantIntegrations:
 
             query = self._extract_spotify_track_query(low)
             if query and query not in {"spotify", "musik"} and not any(k in low for k in ["spela spotify", "play spotify", "spela musik", "play music"]):
-                track = self._spotify_search_track(query)
+                track_name, artist_name = self._split_track_artist(query)
+                track = self._spotify_search_track(track_name, artist=artist_name)
                 if not track:
                     return f"Hittade ingen lat for '{query}' pa Spotify."
                 uri = track.get("uri")
@@ -506,7 +600,7 @@ class AssistantIntegrations:
                 artists = ", ".join(a.get("name", "") for a in track.get("artists", []) if a.get("name")) or "okand artist"
                 return f"Spelar {name} med {artists} pa Spotify."
 
-            if any(k in low for k in ["spela", "play", "ateruppta", "resume"]):
+            if any(k in low for k in ["spela", "play", "sla pa", "starta", "ateruppta", "resume"]) and has_music_context:
                 try:
                     self._spotify_request_with_device("PUT", "/me/player/play")
                 except Exception:
@@ -522,13 +616,17 @@ class AssistantIntegrations:
         if not self.hue_bridge_ip or not self.hue_app_key:
             return None
         low = normalize_text(text)
+        if self._looks_like_music_request(low) and "hue" not in low and "lampa" not in low and "lampor" not in low:
+            return None
+        if any(k in low for k in ["spotify", "musik", "lat", "song", "playlist", "album", "artist"]):
+            return None
         color_match = self._hue_color_payload(low)
         hue_keywords = [
             "tand", "slack", "stang av", "sla pa", "dimma", "ljusstyrka",
             "turn on", "turn off", "brightness", "%", "farg", "färg", "color",
             "hue", "philips", "lampa", "lampor", "indigo", "bla", "blå", "blue",
             "rod", "röd", "red", "gron", "grön", "green", "gul", "orange",
-            "lila", "violett", "purple", "rosa", "pink", "turkos", "cyan",
+            "lila", "violett", "purple", "rosa", "pink", "magenta", "fuchsia", "turkos", "cyan",
             "gor", "andra", "byt",
         ]
         if not any(k in low for k in hue_keywords) and not color_match:

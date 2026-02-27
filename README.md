@@ -61,11 +61,19 @@ Important `.env` values:
 
 ## Run the App
 
+Simple (Bash/Git Bash):
+
+```bash
+bash ./start
+```
+
+Simple (PowerShell):
+
 ```powershell
 python .\voice_assistant_gui.py
 ```
 
-If you use a virtual environment:
+If you use a virtual environment in PowerShell:
 
 ```powershell
 .\venv\Scripts\Activate.ps1
