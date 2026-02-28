@@ -17,6 +17,9 @@ class AssistantIntegrations:
         self._log = log_fn
         self._save_env = save_env_fn
 
+        ha_enabled_raw = os.getenv("HA_ENABLED", "1").strip().lower()
+        self.ha_enabled = ha_enabled_raw in {"1", "true", "yes", "on"}
+
         self.hue_bridge_ip = os.getenv("HUE_BRIDGE_IP", "").strip()
         self.hue_app_key = os.getenv("HUE_APP_KEY", "").strip()
 
@@ -51,6 +54,8 @@ class AssistantIntegrations:
         return resp.json()
 
     def _ha_missing_fields(self) -> list[str]:
+        if not self.ha_enabled:
+            return []
         missing = []
         if not self.ha_url:
             missing.append("HA_URL")
@@ -61,11 +66,22 @@ class AssistantIntegrations:
         return missing
 
     def _ha_request(self, method: str, path: str, payload=None):
+        if not self.ha_enabled:
+            raise RuntimeError("Home Assistant ar avstangt (HA_ENABLED=0).")
         if not self.ha_url or not self.ha_token:
             raise RuntimeError("HA_URL/HA_TOKEN saknas.")
         base_url = self.ha_url.rstrip("/")
         headers = {"Authorization": f"Bearer {self.ha_token}", "Content-Type": "application/json"}
-        resp = requests.request(method, f"{base_url}{path}", json=payload, headers=headers, timeout=10)
+        try:
+            resp = requests.request(method, f"{base_url}{path}", json=payload, headers=headers, timeout=10)
+        except requests.exceptions.ConnectionError as e:
+            host_hint = ""
+            low_url = base_url.lower()
+            if "localhost" in low_url or "127.0.0.1" in low_url:
+                host_hint = " HA_URL pekar pa localhost; anvand IP/hostname till enheten dar Home Assistant kor."
+            raise RuntimeError(f"Kunde inte ansluta till Home Assistant pa {base_url}.{host_hint}") from e
+        except requests.exceptions.Timeout as e:
+            raise RuntimeError(f"Timeout mot Home Assistant pa {base_url}.") from e
         if resp.status_code == 401:
             raise RuntimeError("Home Assistant token ogiltig eller utgangen.")
         resp.raise_for_status()
@@ -74,11 +90,15 @@ class AssistantIntegrations:
         return resp.json()
 
     def _ha_call_vacuum_service(self, service: str):
+        if not self.ha_enabled:
+            raise RuntimeError("Home Assistant ar avstangt (HA_ENABLED=0).")
         if not self.ha_vacuum_entity_id:
             raise RuntimeError("HA_VACUUM_ENTITY_ID saknas.")
         self._ha_request("POST", f"/api/services/vacuum/{service}", {"entity_id": self.ha_vacuum_entity_id})
 
     def _ha_vacuum_state(self):
+        if not self.ha_enabled:
+            raise RuntimeError("Home Assistant ar avstangt (HA_ENABLED=0).")
         if not self.ha_vacuum_entity_id:
             raise RuntimeError("HA_VACUUM_ENTITY_ID saknas.")
         return self._ha_request("GET", f"/api/states/{self.ha_vacuum_entity_id}")
@@ -435,7 +455,7 @@ class AssistantIntegrations:
                     self._log("system", f"Hittade Hue Bridge: {self.hue_bridge_ip}")
 
                 if self.hue_app_key:
-                    self._log("system", "Hue app-nyckel finns redan.")
+                    self._log("system", "Hue konfigurerad.")
                     return
 
                 self._log("system", "Tryck pa knappen pa Hue-hubben nu (inom 30 sekunder)...")
@@ -461,6 +481,8 @@ class AssistantIntegrations:
 
     def auto_connect_vacuum(self) -> None:
         def worker():
+            if not self.ha_enabled:
+                return
             missing = self._ha_missing_fields()
             if missing:
                 self._log("system", f"Home Assistant vacuum saknar konfiguration: {', '.join(missing)}")
@@ -492,6 +514,8 @@ class AssistantIntegrations:
         threading.Thread(target=worker, daemon=True).start()
 
     def handle_vacuum_command(self, text: str) -> str | None:
+        if not self.ha_enabled:
+            return None
         low = normalize_text(text)
         vac_entity_keywords = ["dammsugare", "robotdammsugare", "roborock", "vacuum"]
         if not any(k in low for k in vac_entity_keywords):

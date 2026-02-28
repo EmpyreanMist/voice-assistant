@@ -51,7 +51,7 @@ EDGE_FALLBACKS = {
 
 
 def select_profile() -> VoiceProfile:
-    print("\nValj rost + sprak:")
+    print("\nVälj röst + språk:")
     for profile in VOICE_PROFILES:
         print(f"  {profile.key}. {profile.label}")
 
@@ -66,10 +66,10 @@ def select_profile() -> VoiceProfile:
 def system_prompt_for(language: str) -> str:
     if language == "sv":
         return (
-            "Du ar en hjalpsam svensk assistent. "
-            "Svara pa svenska. Var tydlig och konkret. "
-            "Om fragan galler aktuell information, anvand webben nar det behovs. "
-            "Svara normalt kort (3-6 meningar) om inte anvandaren ber om ett langt svar."
+            "Du är en hjälpsam svensk assistent. "
+            "Svara på svenska. Var tydlig och konkret. "
+            "Om frågan gäller aktuell information, använd webben när det behövs. "
+            "Svara normalt kort (3-6 meningar) om inte användaren ber om ett långt svar."
         )
 
     return (
@@ -212,7 +212,7 @@ def speak(engine: pyttsx3.Engine, text: str, profile: VoiceProfile) -> None:
     if _speak_with_edge(chunks, profile):
         return
 
-    print("TTS fallback till lokal rost.")
+    print("TTS fallback till lokal röst.")
     try:
         for chunk in chunks:
             _speak_local(engine, chunk)
@@ -230,7 +230,7 @@ def wait_for_enter_hold() -> bool:
 
 
 def record_while_enter_held() -> str | None:
-    print("\nHall inne ENTER och prata. Slapp ENTER for att stoppa. ESC avslutar.")
+    print("\nHåll inne ENTER och prata. Släpp ENTER för att stoppa. ESC avslutar.")
     if not wait_for_enter_hold():
         return None
 
@@ -316,7 +316,7 @@ def main() -> None:
     engine = make_tts_engine(profile.language)
 
     print("\nPush-to-talk redo.")
-    print("Kor terminalen som Administrator om ENTER-hold inte registreras.")
+    print("Kör terminalen som Administrator om ENTER-hold inte registreras.")
     print(f"Vald profil: {profile.label}")
 
     while True:
@@ -330,8 +330,8 @@ def main() -> None:
         try:
             user_text = transcribe_audio(client, wav_path, profile.language)
             if not user_text:
-                print("Horde inget.")
-                fallback = "Jag horde inget. Forsok igen." if profile.language == "sv" else "I did not hear anything. Please try again."
+                print("Hörde inget.")
+                fallback = "Jag hörde inget. Försök igen." if profile.language == "sv" else "I did not hear anything. Please try again."
                 speak(engine, fallback, profile)
                 continue
 
@@ -342,7 +342,7 @@ def main() -> None:
             speak(engine, answer or fallback, profile)
         except Exception as e:
             print(f"Fel: {e}")
-            fallback = "Nagot gick fel. Prova igen." if profile.language == "sv" else "Something went wrong. Please try again."
+            fallback = "Något gick fel. Prova igen." if profile.language == "sv" else "Something went wrong. Please try again."
             speak(engine, fallback, profile)
         finally:
             try:

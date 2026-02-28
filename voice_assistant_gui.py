@@ -84,6 +84,13 @@ class VoiceAssistantGUI:
         self.tts_enabled = TTS_ENABLED_DEFAULT
         self.keybind = self._normalize_keybind_name(os.getenv("PTT_KEYBIND", "enter").strip() or "enter")
         self.integrations = AssistantIntegrations(log_fn=self._log, save_env_fn=self._save_env)
+        self.hue_connected = bool(self.integrations.hue_bridge_ip and self.integrations.hue_app_key)
+        self.spotify_connected = bool(
+            self.integrations.spotify_client_id
+            and self.integrations.spotify_client_secret
+            and self.integrations.spotify_refresh_token
+        )
+        self.service_badges: dict[str, dict[str, object]] = {}
         self.input_devices = self._get_input_devices()
         self.output_devices = self._get_output_devices()
         saved_input_name = os.getenv("INPUT_DEVICE_NAME", "").strip()
@@ -113,11 +120,11 @@ class VoiceAssistantGUI:
             self._log("system", f"Hue ansluten ({self.integrations.hue_bridge_ip}).")
         else:
             self._log("system", "Hue inte ansluten ännu. Försöker ansluta automatiskt.")
-        if self.integrations.ha_url and self.integrations.ha_token and self.integrations.ha_vacuum_entity_id:
+        if self.integrations.ha_enabled and self.integrations.ha_url and self.integrations.ha_token and self.integrations.ha_vacuum_entity_id:
             self._log("system", f"Home Assistant vacuum konfigurerad ({self.integrations.ha_vacuum_entity_id}).")
         if self.integrations.spotify_client_id and self.integrations.spotify_client_secret and self.integrations.spotify_refresh_token:
             self._log("system", "Spotify konfigurerad.")
-        self._log("system", "Redo. Tryck Start och hall vald push-to-talk-tangent.")
+        self._log("system", "Redo. Tryck Start och håll vald push-to-talk-tangent.")
         self.integrations.auto_connect_hue()
         self.integrations.auto_connect_vacuum()
         self.integrations.auto_connect_spotify()
@@ -173,7 +180,7 @@ class VoiceAssistantGUI:
         self.status_dot.pack(side=tk.LEFT, padx=(0, 7))
         self.status_dot_id = self.status_dot.create_oval(1, 1, 9, 9, fill="#6b7fa6", outline="")
         ttk.Label(status_pill, textvariable=self.status_var, style="Status.TLabel").pack()
-        self.status_hint_var = tk.StringVar(value="Tryck Start och hall in push-to-talk for att prata.")
+        self.status_hint_var = tk.StringVar(value="Tryck Start och håll in push-to-talk för att prata.")
         self.header_subtitle = ttk.Label(
             header_left,
             text="Push-to-talk med OpenAI, Edge TTS, Hue, Spotify och Home Assistant",
@@ -203,7 +210,7 @@ class VoiceAssistantGUI:
         settings_card.pack(fill=tk.X)
         ttk.Label(settings_card, text="Inställningar", style="Section.TLabel").grid(row=0, column=0, sticky="w", columnspan=3, pady=(0, 10))
 
-        ttk.Label(settings_card, text="Rostprofil", style="Card.TLabel").grid(row=1, column=0, sticky="w")
+        ttk.Label(settings_card, text="Röstprofil", style="Card.TLabel").grid(row=1, column=0, sticky="w")
         self.profile_var = tk.StringVar(value=self.current_profile.label)
         self.profile_combo = ttk.Combobox(
             settings_card,
@@ -236,7 +243,7 @@ class VoiceAssistantGUI:
         self.input_combo.grid(row=3, column=1, columnspan=2, sticky="ew", padx=(8, 0), pady=(10, 0))
         self.input_combo.bind("<<ComboboxSelected>>", self._on_input_changed)
 
-        ttk.Label(settings_card, text="Hogtalare", style="Card.TLabel").grid(row=4, column=0, sticky="w", pady=(10, 0))
+        ttk.Label(settings_card, text="Högtalare", style="Card.TLabel").grid(row=4, column=0, sticky="w", pady=(10, 0))
         self.output_var = tk.StringVar(value=self._output_label_for_index(self.output_device_index))
         self.output_combo = ttk.Combobox(
             settings_card,
@@ -249,7 +256,7 @@ class VoiceAssistantGUI:
         self.output_combo.grid(row=4, column=1, columnspan=2, sticky="ew", padx=(8, 0), pady=(10, 0))
         self.output_combo.bind("<<ComboboxSelected>>", self._on_output_changed)
 
-        ttk.Label(settings_card, text="Svarslage", style="Card.TLabel").grid(row=5, column=0, sticky="w", pady=(10, 0))
+        ttk.Label(settings_card, text="Svarsläge", style="Card.TLabel").grid(row=5, column=0, sticky="w", pady=(10, 0))
         self.response_mode_var = tk.StringVar(value="Tal + text" if self.tts_enabled else "Endast text")
         self.response_mode_combo = ttk.Combobox(
             settings_card,
@@ -276,8 +283,15 @@ class VoiceAssistantGUI:
         tips_card.pack(fill=tk.X)
         ttk.Label(tips_card, text="Snabbtips", style="Section.TLabel").pack(anchor="w")
         ttk.Label(tips_card, text="1. Tryck Start", style="Card.TLabel").pack(anchor="w", pady=(6, 0))
-        ttk.Label(tips_card, text="2. Hall in vald push-to-talk", style="Card.TLabel").pack(anchor="w")
-        ttk.Label(tips_card, text="3. Slapp och fa svar direkt", style="Card.TLabel").pack(anchor="w")
+        ttk.Label(tips_card, text="2. Håll in vald push-to-talk", style="Card.TLabel").pack(anchor="w")
+        ttk.Label(tips_card, text="3. Släpp och få svar direkt", style="Card.TLabel").pack(anchor="w")
+        ttk.Separator(tips_card, orient=tk.HORIZONTAL).pack(fill=tk.X, pady=(10, 8))
+        ttk.Label(tips_card, text="Anslutna tjänster", style="Section.TLabel").pack(anchor="w")
+        services_wrap = tk.Frame(tips_card, bg="#111e35", bd=0, highlightthickness=0)
+        services_wrap.pack(fill=tk.X, pady=(4, 0))
+        self._build_service_badge(services_wrap, "hue", "Hue Bridge")
+        self._build_service_badge(services_wrap, "spotify", "Spotify")
+        self._refresh_service_badges()
 
         right = ttk.Frame(content, style="App.TFrame")
         right.grid(row=0, column=1, sticky="nsew")
@@ -288,7 +302,7 @@ class VoiceAssistantGUI:
         meter_card.grid(row=0, column=0, sticky="ew")
         meter_head = ttk.Frame(meter_card, style="CardAlt.TFrame")
         meter_head.pack(fill=tk.X, pady=(0, 6))
-        ttk.Label(meter_head, text="Ljudniva", style="Section.TLabel").pack(side=tk.LEFT)
+        ttk.Label(meter_head, text="Ljudnivå", style="Section.TLabel").pack(side=tk.LEFT)
         ttk.Label(meter_head, text="Mic", style="Meter.TLabel").pack(side=tk.RIGHT, padx=(12, 0))
         ttk.Label(meter_head, text="AI", style="Meter.TLabel").pack(side=tk.RIGHT)
         self.level_canvas = tk.Canvas(meter_card, height=18, bg="#0b1222", highlightthickness=1, highlightbackground="#1d2b46", bd=0)
@@ -339,6 +353,61 @@ class VoiceAssistantGUI:
             self.header_subtitle.configure(wraplength=wrap)
         if hasattr(self, "header_hint"):
             self.header_hint.configure(wraplength=wrap)
+
+    def _build_service_badge(self, parent, service_key: str, title: str) -> None:
+        row = tk.Frame(parent, bg="#0d1a30", bd=0, highlightthickness=1, highlightbackground="#213a62")
+        row.pack(fill=tk.X, pady=(6, 0))
+        icon = tk.Canvas(row, width=24, height=24, bg="#0d1a30", bd=0, highlightthickness=0)
+        icon.pack(side=tk.LEFT, padx=(8, 8), pady=7)
+        self._draw_service_logo(icon, service_key)
+        tk.Label(row, text=title, fg="#dbe9ff", bg="#0d1a30", font=("Bahnschrift SemiBold", 10)).pack(side=tk.LEFT)
+        status_var = tk.StringVar(value="Ej ansluten")
+        status_label = tk.Label(row, textvariable=status_var, fg="#7b90b8", bg="#0d1a30", font=("Bahnschrift", 9))
+        status_label.pack(side=tk.RIGHT, padx=(8, 8))
+        self.service_badges[service_key] = {"status_var": status_var, "status_label": status_label}
+
+    def _draw_service_logo(self, canvas: tk.Canvas, service_key: str) -> None:
+        if service_key == "spotify":
+            canvas.create_oval(1, 1, 23, 23, fill="#1db954", outline="")
+            canvas.create_arc(5, 7, 20, 16, start=20, extent=140, style=tk.ARC, outline="#0a1611", width=2)
+            canvas.create_arc(6, 10, 19, 18, start=20, extent=135, style=tk.ARC, outline="#0a1611", width=2)
+            canvas.create_arc(7, 13, 17, 19, start=20, extent=130, style=tk.ARC, outline="#0a1611", width=2)
+            return
+        canvas.create_oval(2, 2, 12, 12, fill="#f74f78", outline="")
+        canvas.create_oval(12, 2, 22, 12, fill="#ffd054", outline="")
+        canvas.create_oval(2, 12, 12, 22, fill="#6ee3ff", outline="")
+        canvas.create_oval(12, 12, 22, 22, fill="#84ff9d", outline="")
+
+    def _set_service_connected(self, service_key: str, connected: bool) -> None:
+        if service_key == "hue":
+            self.hue_connected = bool(connected)
+        elif service_key == "spotify":
+            self.spotify_connected = bool(connected)
+        badge = self.service_badges.get(service_key)
+        if not badge:
+            return
+        status_var = badge["status_var"]
+        status_label = badge["status_label"]
+        status_var.set("Ansluten" if connected else "Ej ansluten")
+        status_label.configure(fg="#8af5bb" if connected else "#7b90b8")
+
+    def _refresh_service_badges(self) -> None:
+        self._set_service_connected("hue", self.hue_connected)
+        self._set_service_connected("spotify", self.spotify_connected)
+
+    def _update_service_state_from_log(self, source: str, text: str) -> None:
+        if source != "system":
+            return
+        low = normalize_text(text)
+        if "hue ansluten" in low or "hue konfigurerad" in low:
+            self._set_service_connected("hue", True)
+        elif "hue inte ansluten" in low or "hue-fel" in low:
+            self._set_service_connected("hue", False)
+
+        if "spotify ansluten" in low or "spotify konfigurerad" in low:
+            self._set_service_connected("spotify", True)
+        elif "spotify saknar konfiguration" in low or "spotify kunde inte verifieras" in low:
+            self._set_service_connected("spotify", False)
 
     def _clear_log(self) -> None:
         self.log_queue = queue.Queue()
@@ -468,7 +537,7 @@ class VoiceAssistantGUI:
                     self.output_device_index = idx
                 self._save_env("OUTPUT_DEVICE_NAME", label)
                 self._apply_audio_device_defaults()
-                self._log("system", f"Hogtalare satt till: {label}")
+                self._log("system", f"Högtalare satt till: {label}")
                 return
 
     def _save_env(self, key: str, value: str) -> None:
@@ -483,7 +552,7 @@ class VoiceAssistantGUI:
         with self.lock:
             self.tts_enabled = enabled
         self._save_env("TTS_ENABLED", "1" if enabled else "0")
-        self._log("system", f"Svarslage satt till: {mode}")
+        self._log("system", f"Svarsläge satt till: {mode}")
 
     def _normalize_keybind_name(self, key: str) -> str:
         k = (key or "").strip().lower().replace(" ", "")
@@ -564,16 +633,16 @@ class VoiceAssistantGUI:
 
         self.capturing_keybind = True
         self.bind_btn.configure(text="Tryck valfri tangent...")
-        self._log("system", "Tryck nu den tangent du vill anvanda som push-to-talk.")
+        self._log("system", "Tryck nu den tangent du vill använda som push-to-talk.")
 
     def _finish_keybind_capture(self, key: str, error: str | None) -> None:
         self.capturing_keybind = False
         self.bind_btn.configure(text="Satt tangent")
         if error:
-            self._log("system", f"Kunde inte lasa tangent: {error}")
+            self._log("system", f"Kunde inte läsa tangent: {error}")
             return
         if not key:
-            self._log("system", "Ingen giltig tangent upptacktes.")
+            self._log("system", "Ingen giltig tangent upptäcktes.")
             return
         key = self._normalize_keybind_name(key)
         with self.lock:
@@ -677,14 +746,14 @@ class VoiceAssistantGUI:
         raw = (status_text or "").strip().lower()
         state = raw.replace("status:", "").strip()
         labels = {
-            "idle": ("Redo", "Tryck Start och hall in push-to-talk for att prata.", "#6b7fa6"),
-            "listening": ("Lyssnar", "Vantar pa att du trycker push-to-talk.", "#4de28b"),
-            "recording": ("Spelar in", "Prata nu. Slapp push-to-talk nar du ar klar.", "#2ed3f1"),
-            "processing": ("Tanker", "Transkriberar och forbereder svar.", "#f2c94c"),
-            "speaking": ("Pratar", "Svarar med vald rostprofil.", "#ff9f67"),
-            "stopped": ("Stoppad", "Lyssning ar stoppad tills du startar igen.", "#ff6b88"),
+            "idle": ("Redo", "Tryck Start och håll in push-to-talk för att prata.", "#6b7fa6"),
+            "listening": ("Lyssnar", "Väntar på att du trycker push-to-talk.", "#4de28b"),
+            "recording": ("Spelar in", "Prata nu. Släpp push-to-talk när du är klar.", "#2ed3f1"),
+            "processing": ("Tänker", "Transkriberar och förbereder svar.", "#f2c94c"),
+            "speaking": ("Pratar", "Svarar med vald röstprofil.", "#ff9f67"),
+            "stopped": ("Stoppad", "Lyssning är stoppad tills du startar igen.", "#ff6b88"),
         }
-        label, hint, color = labels.get(state, ("Aktiv", "Assistant kor.", "#7fa0ff"))
+        label, hint, color = labels.get(state, ("Aktiv", "Assistent kör.", "#7fa0ff"))
         self.status_var.set(f"Status: {label}")
         self.status_hint_var.set(hint)
         if hasattr(self, "status_dot") and hasattr(self, "status_dot_id"):
@@ -760,6 +829,7 @@ class VoiceAssistantGUI:
                 source, text = self.log_queue.get_nowait()
             except queue.Empty:
                 break
+            self._update_service_state_from_log(source, text)
             prefix = {"user": "Du", "assistant": "Assistent", "system": "System"}.get(source, "Log")
             tag = {"user": "user_prefix", "assistant": "assistant_prefix", "system": "system_prefix"}.get(source, "system_prefix")
             msg_tag = {"user": "user_msg", "assistant": "assistant_msg", "system": "system_msg"}.get(source, "system_msg")
@@ -861,12 +931,12 @@ class VoiceAssistantGUI:
                             break
                     if not chunk_ok:
                         voice_ok = False
-                        self._log("system", f"Edge TTS misslyckades med {voice}. Provar nasta rost.")
+                        self._log("system", f"Edge TTS misslyckades med {voice}. Provar nästa röst.")
                         break
                 if voice_ok:
                     return
 
-        self._log("system", "Edge TTS otillganglig/instabil just nu. Anvander lokal rost.")
+        self._log("system", "Edge TTS otillgänglig/instabil just nu. Använder lokal röst.")
         for chunk in chunks:
             if self.stop_event.is_set():
                 return
@@ -891,7 +961,7 @@ class VoiceAssistantGUI:
                 while self.running and not self.stop_event.is_set() and self._is_bind_pressed(key_name):
                     chunk, overflowed = stream.read(BLOCK_SIZE)
                     if overflowed:
-                        self._log("system", "Audio overflow upptackt.")
+                        self._log("system", "Audio overflow upptäckt.")
                     mono = chunk.astype(np.float32) / 32768.0
                     rms = float(np.sqrt(np.mean(np.square(mono))))
                     level = self._normalize_rms_level(rms, floor_db=-56.0, ceil_db=-16.0)
@@ -956,7 +1026,7 @@ class VoiceAssistantGUI:
                     continue
 
                 self._queue_status("Status: recording")
-                self._log("system", f"Spelar in... (hall {key_name})")
+                self._log("system", f"Spelar in... (håll {key_name})")
                 wav_path = self._record_while_key_held(key_name)
 
                 if self.stop_event.is_set():
@@ -975,7 +1045,7 @@ class VoiceAssistantGUI:
                     Path(wav_path).unlink(missing_ok=True)
 
                 if not user_text:
-                    self._log("system", "Horde inget, forsok igen.")
+                    self._log("system", "Hörde inget, försök igen.")
                     self._queue_status("Status: listening")
                     continue
 
@@ -1036,7 +1106,7 @@ class VoiceAssistantGUI:
                 self._queue_status("Status: processing")
                 self._process_user_text(text, profile, engine)
             except Exception as e:
-                self._log("system", f"Textfraga misslyckades: {e}")
+                self._log("system", f"Textfråga misslyckades: {e}")
             finally:
                 if self.running and not self.stop_event.is_set():
                     self._queue_status("Status: listening")
